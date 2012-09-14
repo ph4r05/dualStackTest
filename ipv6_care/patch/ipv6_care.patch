@@ -1,0 +1,3246 @@
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/configure.ac ipv6-care/configure.ac
+--- ipv6-care.orig/configure.ac	2012-09-11 17:35:35.429348325 +0200
++++ ipv6-care/configure.ac	2012-09-11 09:07:13.000000000 +0200
+@@ -97,7 +97,7 @@
+ AC_SUBST(IPV4_POOL_END)
+ 
+ AC_CONFIG_FILES([Makefile src/common/Makefile src/checking/Makefile \
+-		src/patching/Makefile scripts/ipv6_care:scripts/ipv6_care.in man/Makefile \
++		src/patching/Makefile src/vxonly/Makefile scripts/ipv6_care:scripts/ipv6_care.in man/Makefile \
+ 		scripts/Makefile self_test/Makefile self_test/src/Makefile self_test/src/libs/Makefile self_test/src/binaries/Makefile ])
+ AC_OUTPUT
+ 
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/Makefile.am ipv6-care/Makefile.am
+--- ipv6-care.orig/Makefile.am	2012-09-11 17:35:35.429348325 +0200
++++ ipv6-care/Makefile.am	2012-09-11 09:15:52.000000000 +0200
+@@ -16,7 +16,7 @@
+ # See the License for the specific language governing permissions and 
+ # limitations under the License.
+ include $(top_srcdir)/Makefile.flags
+-SUBDIRS = src/common src/checking src/patching man scripts self_test
++SUBDIRS = src/common src/checking src/patching src/vxonly man scripts self_test
+ 
+ EXTRA_DIST = LICENSE README
+ 
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/scripts/ipv6_care.in ipv6-care/scripts/ipv6_care.in
+--- ipv6-care.orig/scripts/ipv6_care.in	2012-09-11 17:35:35.481348692 +0200
++++ ipv6-care/scripts/ipv6_care.in	2012-09-11 09:06:07.000000000 +0200
+@@ -53,6 +53,7 @@
+ 	ENDCOLOR=""
+ fi
+ 
++vxonly_library="$libdir/libipv6_care_vxonly.so"
+ checking_library="$libdir/libipv6_care_checking.so"
+ patching_library="$libdir/libipv6_care_patching.so"
+ 
+@@ -77,6 +78,7 @@
+ 		echo "       $this_program patch <program_command_line>              # -> patch mode" >&2
+ 	fi
+ 	echo "       $this_program check [-v] <program_command_line>         # -> check mode" >&2
++	echo "       $this_program vxonly [-v] <program_command_line>         # -> force application to be IPvX-only" >&2
+ 	if [ "$PATCH_MODE_ENABLED" = "1" ] 
+ 	then
+ 		echo "Usage: system set up mode:" >&2
+@@ -277,6 +279,83 @@
+ 
+ 		;;
+ 
++  "vxonly")
++    shift
++
++    if [ "$1" = "-v" ]
++    then
++      verbose_level=1
++      shift
++    else
++      verbose_level=0
++    fi
++
++    # format the command line
++    program_to_test="$(
++      source "$bindir/IPv6_CARE_protect_arguments.sh"
++    )"
++
++    # check that it seems ok
++    if [ "$program_to_test" = "" ]
++    then
++      echo "Usage: $this_program vxonly <program_command_line_which_must_be_tested_about_IPv6>" >&2
++      exit
++    fi
++
++    # function which prints a separation line
++    print_separation_line()
++    {
++      printf "%${COLUMNS}s\n" "" | tr " " "-"
++    }
++
++    # this function will be called at the end
++    end_of_script()
++    {
++      echo -en "$GREEN"
++      print_separation_line
++      echo "VXOnly mode finished"
++
++      echo -en "$GREEN"
++      print_separation_line
++      echo -en "$ENDCOLOR"
++      exit
++    }
++
++    get_process_list()
++    { # on some systems no "-T" option is available
++      # so we combine the -t option and the tty command for the same effect
++      ps -t "$(expr "$(tty)" : "\/dev\/\(.*\)")" -o pid= -o comm=
++    }
++
++    get_process_list > /tmp/.plist_$$_init
++
++    # whatever happens, call end_of_script() at the end
++    trap end_of_script EXIT
++
++    # run the test
++    IPV6_VERBOSE_LEVEL=$verbose_level LD_PRELOAD="$vxonly_library" \
++            eval "IPV6_CARE_TTY=$(tty) $IPV6_CARE_DEBUG_TOOL $program_to_test"
++    # done.
++
++    # check if some subprocesses are still running
++    while true
++    do
++      get_process_list > /tmp/.plist_$$_end
++
++      subprocesses_list=$(diff /tmp/.plist_$$_init /tmp/.plist_$$_end | grep -vw ps | grep "^>.*$" | 
++            awk '{ print $2 }')
++      subprocesses_list=$(echo $subprocesses_list)  # convert linebreaks to spaces
++      if [ "$subprocesses_list" != "" ]
++      then
++        echo "Some subprocesses started by the command are still running: $subprocesses_list. Waiting... (Press Ctrl-C to stop waiting)"
++        sleep 1
++      else
++        break
++      fi
++    done
++
++    ;;
++
+ 	"patch")
+ 		shift
+ 
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/src/common/common_original_functions.c ipv6-care/src/common/common_original_functions.c
+--- ipv6-care.orig/src/common/common_original_functions.c	2012-09-11 17:35:35.768350704 +0200
++++ ipv6-care/src/common/common_original_functions.c	2012-09-14 10:41:08.000000000 +0200
+@@ -32,6 +32,7 @@
+ #include <sys/select.h>
+ #include <netinet/in.h>
+ #include <arpa/inet.h>
++//#include <stdio.h>
+ 
+ #if !defined(__GLIBC__) || (__GLIBC__ < 2) || ((__GLIBC__ == 2) && (__GLIBC_MINOR__ < 4))
+ // The following function was introduced in glibc 2.4
+@@ -338,6 +339,17 @@
+ 	return result;
+ }
+ 
++ssize_t original_recvmsg(int sockfd, struct msghdr *msg, int flags)
++{
++	int result;
++
++	__CALL_ORIGINAL_FUNCTION(	FUNCTION_SYMBOL(recvmsg),
++					ARGS(sockfd, msg, flags),
++					RETURN_VALUE_IF_FAILURE(-1),
++					RESULT(result));
++	return result;
++}
++
+ int original_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *errorfds,
+       struct timeval *timeout)
+ {
+@@ -362,6 +374,17 @@
+ 	return result;
+ }
+ 
++ssize_t original_sendmsg(int socket, const struct msghdr *message, int flags)
++{
++	int result;
++
++	__CALL_ORIGINAL_FUNCTION(	FUNCTION_SYMBOL(sendmsg),
++					ARGS(socket, message, flags),
++					RETURN_VALUE_IF_FAILURE(-1),
++					RESULT(result));
++	return result;
++}
++
+ 
+ int original_setsockopt(int socket, int level, int option_name,
+ 		const void *option_value, socklen_t option_len)
+@@ -385,4 +408,15 @@
+ 					RESULT(result));
+ 	return result;
+ }
++/*
++FILE * original_fopen(const char *path, const char *mode)
++{
++	FILE *result;
+ 
++	__CALL_ORIGINAL_FUNCTION(	FUNCTION_SYMBOL(fopen),
++					ARGS(path, mode),
++					RETURN_VALUE_IF_FAILURE(NULL),
++					RESULT(result));
++	return result;
++}
++*/
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/src/common/common_original_functions.h ipv6-care/src/common/common_original_functions.h
+--- ipv6-care.orig/src/common/common_original_functions.h	2012-09-11 17:35:35.768350704 +0200
++++ ipv6-care/src/common/common_original_functions.h	2012-09-14 10:41:13.000000000 +0200
+@@ -29,6 +29,7 @@
+ #include <sys/select.h>
+ #include <netdb.h>
+ #include <arpa/inet.h>
++//#include <stdio.h>
+ 
+ int original_accept(int socket, struct sockaddr *address,
+               socklen_t *address_len);
+@@ -66,13 +67,15 @@
+ ssize_t original_read(int fd, void *buf, size_t count);
+ ssize_t original_recvfrom(int sockfd, void *buf, size_t len, int flags,
+                         struct sockaddr *src_addr, socklen_t *addrlen);
++ssize_t original_recvmsg(int sockfd, struct msghdr *msg, int flags);                        
+ int original_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *errorfds,
+ 	      struct timeval *timeout);
+ ssize_t original_sendto(int sockfd, const void *buf, size_t len, int flags,
+                       const struct sockaddr *dest_addr, socklen_t addrlen);
++ssize_t original_sendmsg(int socket, const struct msghdr *message, int flags);                      
+ int original_setsockopt(int socket, int level, int option_name,
+ 		const void *option_value, socklen_t option_len);
+ int original_socket(int domain, int type, int protocol);
+ ssize_t original_write(int fd, const void *buf, size_t count);
+-
++//FILE * original_fopen(const char *path, const char *mode);
+ #endif
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/src/vxonly/append_to_string.c ipv6-care/src/vxonly/append_to_string.c
+--- ipv6-care.orig/src/vxonly/append_to_string.c	1970-01-01 01:00:00.000000000 +0100
++++ ipv6-care/src/vxonly/append_to_string.c	2012-09-10 23:24:44.000000000 +0200
+@@ -0,0 +1,62 @@
++/*
++Copyright (c) Centre National de la Recherche Scientifique (CNRS,
++France). 2010. 
++Copyright (c) Members of the EGEE Collaboration. 2008-2010. See 
++http://www.eu-egee.org/partners/ for details on the copyright
++holders.  
++
++Licensed under the Apache License, Version 2.0 (the "License"); 
++you may not use this file except in compliance with the License. 
++You may obtain a copy of the License at 
++
++    http://www.apache.org/licenses/LICENSE-2.0 
++
++Unless required by applicable law or agreed to in writing, software 
++distributed under the License is distributed on an "AS IS" BASIS, 
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
++See the License for the specific language governing permissions and 
++limitations under the License.
++
++---------------------------------------------------------------------
++Developed by Etienne DUBLE - CNRS LIG (http://www.liglab.fr)
++etienne __dot__ duble __at__ imag __dot__ fr
++---------------------------------------------------------------------
++*/
++#include <stdio.h>
++
++#include <stdlib.h>
++#include <stdarg.h>
++
++// Generic function used to append something to a string, 
++// in a printf format. The string is dynamically reallocated if needed.
++void append_to_string(char **string, char *format, ...)
++{
++        va_list arguments;
++	char *new_string = NULL, *new_appended_string = NULL;
++
++	// if the string is not yet allocated, we allocate an empty string
++	if (*string == NULL)
++	{
++		asprintf(string, "%s", "");
++	}
++
++	// get the variable arguments in the arguments variable
++        va_start(arguments, format);
++
++	// format the string to be appended
++	vasprintf(&new_string, format, arguments);
++
++	// append it
++	asprintf(&new_appended_string, "%s%s", *string, new_string);
++	
++	// free memory
++	free(new_string);
++	free(*string);
++	
++	// point to the resulting string
++	*string = new_appended_string;
++	
++	// free the arguments variable
++        va_end ( arguments ); 
++}
++
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/src/vxonly/append_to_string.h ipv6-care/src/vxonly/append_to_string.h
+--- ipv6-care.orig/src/vxonly/append_to_string.h	1970-01-01 01:00:00.000000000 +0100
++++ ipv6-care/src/vxonly/append_to_string.h	2012-09-10 23:24:44.000000000 +0200
+@@ -0,0 +1,30 @@
++/*
++Copyright (c) Centre National de la Recherche Scientifique (CNRS,
++France). 2010. 
++Copyright (c) Members of the EGEE Collaboration. 2008-2010. See 
++http://www.eu-egee.org/partners/ for details on the copyright
++holders.  
++
++Licensed under the Apache License, Version 2.0 (the "License"); 
++you may not use this file except in compliance with the License. 
++You may obtain a copy of the License at 
++
++    http://www.apache.org/licenses/LICENSE-2.0 
++
++Unless required by applicable law or agreed to in writing, software 
++distributed under the License is distributed on an "AS IS" BASIS, 
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
++See the License for the specific language governing permissions and 
++limitations under the License.
++
++---------------------------------------------------------------------
++Developed by Etienne DUBLE - CNRS LIG (http://www.liglab.fr)
++etienne __dot__ duble __at__ imag __dot__ fr
++---------------------------------------------------------------------
++*/
++#ifndef __APPEND_TO_STRING_H__
++#define __APPEND_TO_STRING_H__
++
++void append_to_string(char **string, char *format, ...);
++
++#endif
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/src/vxonly/fd_set_tools.c ipv6-care/src/vxonly/fd_set_tools.c
+--- ipv6-care.orig/src/vxonly/fd_set_tools.c	1970-01-01 01:00:00.000000000 +0100
++++ ipv6-care/src/vxonly/fd_set_tools.c	2012-09-10 23:24:44.000000000 +0200
+@@ -0,0 +1,170 @@
++/*
++Copyright (c) Centre National de la Recherche Scientifique (CNRS,
++France). 2010. 
++Copyright (c) Members of the EGEE Collaboration. 2008-2010. See 
++http://www.eu-egee.org/partners/ for details on the copyright
++holders.  
++
++Licensed under the Apache License, Version 2.0 (the "License"); 
++you may not use this file except in compliance with the License. 
++You may obtain a copy of the License at 
++
++    http://www.apache.org/licenses/LICENSE-2.0 
++
++Unless required by applicable law or agreed to in writing, software 
++distributed under the License is distributed on an "AS IS" BASIS, 
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
++See the License for the specific language governing permissions and 
++limitations under the License.
++
++---------------------------------------------------------------------
++Developed by Etienne DUBLE - CNRS LIG (http://www.liglab.fr)
++etienne __dot__ duble __at__ imag __dot__ fr
++---------------------------------------------------------------------
++*/
++#include <sys/socket.h>
++#include <stdio.h>
++#include <sys/types.h>
++#include <string.h>
++
++#include "macros.h"
++#include "common_networking_tools.h"
++#include "common_original_functions.h"
++
++extern __thread fd_set last_read_fds_storage;
++extern __thread fd_set *last_read_fds;
++extern __thread unsigned int last_read_nfds;
++
++// These functions are useful for the management of fd-sets 
++// in 'select' and 'pselect'
++// ----------------------------------------------------------
++void register_last_read_fds(fd_set *readfds, nfds_t nfds)
++{
++	if (last_read_fds == NULL)
++	{
++		last_read_fds = &last_read_fds_storage;
++	}
++	
++	memcpy(last_read_fds, readfds, sizeof(*last_read_fds));
++	last_read_nfds = nfds;
++}
++
++
++int test_if_accepting_only_IPv4(int socket)
++{
++	struct sockaddr_storage sas;
++	unsigned int size = sizeof(sas);
++	struct sockaddr *sa = (struct sockaddr *)&sas;
++
++	// we will check that we are not accepting only IPv4 clients, i.e.:
++	// 1) the socket is IPv4
++	// 2) no select / poll involving both this socket and at least one IPv6 socket was previously done
++
++	original_getsockname(socket, sa, &size);
++	if (sa->sa_family == AF_INET)
++	{	// test if a select / poll was previously done
++		if (last_read_fds == NULL)
++			return 1;
++		// test if this previous select / poll involved this socket
++		if (!FD_ISSET(socket, last_read_fds))
++			return 1;
++		// test if this previous select / poll also involved at least one IPv6 socket
++		if (test_if_fd_set_contains_ipv6_sockets(last_read_nfds, last_read_fds) == 0)
++			return 1;
++	}
++
++	return 0;
++}
++
++int test_if_fd_set_contains_ipv6_sockets(int nfds, fd_set *fds)
++{
++	int n;
++	int result = 0; // false by default
++
++	for (n=0; n<nfds; n++)
++	{
++		if ((fds != 0)&&(FD_ISSET(n, fds) != 0))
++		{
++			if (test_if_fd_is_an_ipv6_socket(n) == 1)
++			{
++				result = 1; // true
++				break;
++			}
++		}
++	}
++
++	return result;
++}
++
++int test_if_fd_sets_contain_network_sockets(int nfds, fd_set *readfds, fd_set *writefds, fd_set *errorfds)
++{
++	int n;
++	int result = 0; // false by default
++
++	for (n=0; n<nfds; n++)
++	{
++		if ((readfds != 0)&&(FD_ISSET(n, readfds) != 0))
++		{
++			if (test_if_fd_is_a_network_socket(n) == 1)
++			{
++				result = 1; // true
++				break;
++			}
++		}
++
++		if ((writefds != 0)&&(FD_ISSET(n, writefds) != 0))
++		{
++			if (test_if_fd_is_a_network_socket(n) == 1)
++			{
++				result = 1; // true
++				break;
++			}
++		}
++		if ((errorfds != 0)&&(FD_ISSET(n, errorfds) != 0))
++		{
++			if (test_if_fd_is_a_network_socket(n) == 1)
++			{
++				result = 1; // true
++				break;
++			}
++		}
++	}
++
++	return result;
++}
++
++void register_fd_sets_parameters(int nfds, fd_set *readfds, fd_set *writefds, fd_set *errorfds)
++{
++	char info_name[32];
++	int n;
++
++	for (n=0; n<nfds; n++)
++	{
++		if ((readfds != 0)&&(FD_ISSET(n, readfds) != 0))
++		{
++			if (test_if_fd_is_a_network_socket(n) == 1)
++			{
++				snprintf(info_name, sizeof(info_name) -1, "readfds[%d]", n);
++				__REGISTER_INFO_CHARS(info_name, "1");
++			}
++		}
++
++		if ((writefds != 0)&&(FD_ISSET(n, writefds) != 0))
++		{
++			if (test_if_fd_is_a_network_socket(n) == 1)
++			{
++				snprintf(info_name, sizeof(info_name) -1, "writefds[%d]", n);
++				__REGISTER_INFO_CHARS(info_name, "1");
++			}
++		}
++		if ((errorfds != 0)&&(FD_ISSET(n, errorfds) != 0))
++		{
++			if (test_if_fd_is_a_network_socket(n) == 1)
++			{
++				snprintf(info_name, sizeof(info_name) -1, "errorfds[%d]", n);
++				__REGISTER_INFO_CHARS(info_name, "1");
++			}
++		}
++	}
++}
++
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/src/vxonly/fd_set_tools.h ipv6-care/src/vxonly/fd_set_tools.h
+--- ipv6-care.orig/src/vxonly/fd_set_tools.h	1970-01-01 01:00:00.000000000 +0100
++++ ipv6-care/src/vxonly/fd_set_tools.h	2012-09-10 23:24:44.000000000 +0200
+@@ -0,0 +1,34 @@
++/*
++Copyright (c) Centre National de la Recherche Scientifique (CNRS,
++France). 2010. 
++Copyright (c) Members of the EGEE Collaboration. 2008-2010. See 
++http://www.eu-egee.org/partners/ for details on the copyright
++holders.  
++
++Licensed under the Apache License, Version 2.0 (the "License"); 
++you may not use this file except in compliance with the License. 
++You may obtain a copy of the License at 
++
++    http://www.apache.org/licenses/LICENSE-2.0 
++
++Unless required by applicable law or agreed to in writing, software 
++distributed under the License is distributed on an "AS IS" BASIS, 
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
++See the License for the specific language governing permissions and 
++limitations under the License.
++
++---------------------------------------------------------------------
++Developed by Etienne DUBLE - CNRS LIG (http://www.liglab.fr)
++etienne __dot__ duble __at__ imag __dot__ fr
++---------------------------------------------------------------------
++*/
++#ifndef __FD_SET_TOOLS_H__
++#define __FD_SET_TOOLS_H__
++#include <sys/types.h>
++
++void register_last_read_fds(fd_set *readfds, nfds_t nfds);
++int test_if_accepting_only_IPv4(int socket);
++int test_if_fd_set_contains_ipv6_sockets(int nfds, fd_set *fds);
++int test_if_fd_sets_contain_network_sockets(int nfds, fd_set *readfds, fd_set *writefds, fd_set *errorfds);
++void register_fd_sets_parameters(int nfds, fd_set *readfds, fd_set *writefds, fd_set *errorfds);
++#endif
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/src/vxonly/filesystem.c ipv6-care/src/vxonly/filesystem.c
+--- ipv6-care.orig/src/vxonly/filesystem.c	1970-01-01 01:00:00.000000000 +0100
++++ ipv6-care/src/vxonly/filesystem.c	2012-09-10 23:24:44.000000000 +0200
+@@ -0,0 +1,253 @@
++/*
++Copyright (c) Centre National de la Recherche Scientifique (CNRS,
++France). 2010. 
++Copyright (c) Members of the EGEE Collaboration. 2008-2010. See 
++http://www.eu-egee.org/partners/ for details on the copyright
++holders.  
++
++Licensed under the Apache License, Version 2.0 (the "License"); 
++you may not use this file except in compliance with the License. 
++You may obtain a copy of the License at 
++
++    http://www.apache.org/licenses/LICENSE-2.0 
++
++Unless required by applicable law or agreed to in writing, software 
++distributed under the License is distributed on an "AS IS" BASIS, 
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
++See the License for the specific language governing permissions and 
++limitations under the License.
++
++---------------------------------------------------------------------
++Developed by Etienne DUBLE - CNRS LIG (http://www.liglab.fr)
++etienne __dot__ duble __at__ imag __dot__ fr
++---------------------------------------------------------------------
++*/
++#include <stdio.h>
++
++#include <stdlib.h>
++#include <dirent.h>
++#include <errno.h>
++#include <time.h>
++#include <libgen.h>
++#include <sys/stat.h>
++#include <sys/types.h>
++#include <unistd.h>
++#include <string.h>
++#include <sys/syscall.h>
++extern int errno;
++
++#include "append_to_string.h"
++#include "common_fd_tools.h"
++#include "common_other_tools.h"
++#include "common_colors.h"
++#include "log.h"
++#include "system_commands.h"
++
++#define __BASE_DIAGNOSIS_DIRECTORY	"/tmp/ipv6_diagnosis"
++#define __FULL_COMMAND_LINE_FILE	"full_command_line"
++#define __MKDIR_PERMISSIONS		(S_IRWXU | S_IRWXG | S_IRWXO)
++#define __FOPEN_PERMISSIONS		"w"
++
++extern char *program_basename;
++extern char *program_command_line;
++
++int mkdir_777(char *dir)
++{
++	mode_t old_umask;
++	int result;
++
++	old_umask = umask(0);
++	result = mkdir(dir, __MKDIR_PERMISSIONS);
++	umask(old_umask);
++	return result;
++}
++
++FILE *fopen_666(char *file)
++{
++	mode_t old_umask;
++	FILE *result;
++
++	old_umask = umask(0);
++	result = fopen(file, __FOPEN_PERMISSIONS);
++	umask(old_umask);
++	return result;
++}
++
++// This function creates a directory path
++int recursive_mkdir(char *dir)
++{
++	int result = -1;
++	char *basedir_alloc, *basedir;
++
++	basedir_alloc = (char*) malloc((strlen(dir) + 1)*sizeof(char));
++
++	// if recursion arrived at "/" it is time to stop!
++	if (strcmp(dir, "/") != 0)
++	{
++		// first try
++		result = mkdir_777(dir);
++
++		// if dir already exist we do not consider it is an error
++		if ((result != 0)&&(errno == EEXIST))
++		{
++			result = 0;
++		}
++
++		if ((result != 0)&&(errno != ENOENT))
++		{
++			colored_print_if_tty(RED, "** IPv6 CARE failed to create %s (%s).", dir, strerror(errno));
++			PRINTF("\n"); 
++			fflush(tty_fd);
++		}
++
++		// if first try failed with error "no such file or directory"
++		if ((result != 0)&&(errno == ENOENT))
++		{
++			// we calculate the base dir
++			// (we first make a copy because dirname modifies the string)
++			strcpy(basedir_alloc, dir);
++			basedir = dirname((char *)basedir_alloc);
++			// and call the function on this base dir
++			result = recursive_mkdir(basedir);
++
++			if (result == 0)
++			{	// if result was ok on the base dir,
++				// we should now be able to create the initial directory
++				result = mkdir_777(dir);
++			}
++		}
++	}
++
++	free(basedir_alloc);	
++
++	return result;
++}
++
++// This function creates the directory path related to the running program
++// and returns a string representing this path.
++char *get_or_create_the_directory_related_to_the_program()
++{
++	static int directory_created = 0;
++	static char *directory_path_alloc = NULL;
++
++	char *symlink_dir_path_alloc, *symlink_path_alloc, 
++			*full_command_line_path_alloc;
++	time_t now;
++	struct tm time_details;
++	static char* month_name[12] = {
++                      "Jan", "Feb", "Mar", "Apr", "May", "Jun",
++                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
++                  };
++	FILE *file;
++     
++     	if (directory_created == 0)
++	{
++		// build the path of the directory
++		asprintf(&directory_path_alloc, "%s/%s/by_pid/pid_%d", __BASE_DIAGNOSIS_DIRECTORY,
++				program_basename, getpid());
++
++		// create the directory if the directory do not already exists
++		if (recursive_mkdir(directory_path_alloc) != 0)
++		{	// error already reported in recursive_mkdir()
++			free(directory_path_alloc);
++			return NULL;
++		}
++		else
++		{	
++			// we create a symbolic link with the date in order to find easily 
++			// which pid is the one we want to look at
++			time(&now);
++			localtime_r(&now, &time_details);
++
++			asprintf(&symlink_dir_path_alloc, "%s/%s/by_time/%s_%d_%d_%02dh%02d",
++					__BASE_DIAGNOSIS_DIRECTORY, program_basename, 
++					month_name[time_details.tm_mon], time_details.tm_mday, 
++					1900 + time_details.tm_year, time_details.tm_hour, 
++					time_details.tm_min);
++
++			// create the directory
++			recursive_mkdir(symlink_dir_path_alloc);
++
++			asprintf(&symlink_path_alloc, "%s/pid_%d",
++					symlink_dir_path_alloc, getpid());
++			symlink(directory_path_alloc, symlink_path_alloc);
++			free(symlink_path_alloc);
++			free(symlink_dir_path_alloc);
++
++			// we also create the full_command_line file
++			asprintf(&full_command_line_path_alloc, "%s/%s",
++				directory_path_alloc, __FULL_COMMAND_LINE_FILE);
++			file = fopen(full_command_line_path_alloc, "w");
++			fprintf(file, "%s\n", program_command_line);
++			fclose(file);
++			free(full_command_line_path_alloc);
++
++			directory_created = 1;
++		}
++	}
++
++	return directory_path_alloc;
++}
++
++// This function creates the directory path related to the running thread
++// and returns a string representing this path.
++char *get_or_create_the_directory_related_to_the_thread()
++{
++	static __thread int directory_created = 0;
++	static __thread char *directory_path_alloc_thread = NULL;
++
++	char *directory_path;
++	int thread_id;
++
++	if (directory_created == 0)
++	{
++		directory_path = get_or_create_the_directory_related_to_the_program();
++		if (directory_path != NULL)
++		{	
++			thread_id = get_thread_id();
++
++			// if this is the main thread started at execution of the program, put diagnosis in the main directory
++			if (thread_id == 0)
++			{
++				//directory_path_alloc_thread = directory_path;
++				asprintf(&directory_path_alloc_thread, "%s", directory_path); 
++			}
++			else
++			{	// this thread was created later on, put diagnosis in a dedicate directory
++				asprintf(&directory_path_alloc_thread, "%s/thread_%d", directory_path, thread_id); 
++				recursive_mkdir(directory_path_alloc_thread);
++			}
++
++			directory_created = 1;
++		}
++	}
++
++	return directory_path_alloc_thread;
++}
++
++// this function opens the log file and returns its file descriptor
++FILE *open_log_file()
++{
++	FILE *file = NULL;
++	char *full_filename_alloc;
++	char *directory_path;
++
++	directory_path = get_or_create_the_directory_related_to_the_thread();
++	if (directory_path != NULL)
++	{	
++		asprintf(&full_filename_alloc, "%s/log", directory_path); 
++
++		// open the file
++		file = fopen_666(full_filename_alloc);
++		free(full_filename_alloc);
++		if (file == NULL)
++		{
++			colored_print_if_tty(RED, "** IPv6 CARE failed to create or open %s (%s).", full_filename_alloc, strerror(errno));
++			PRINTF("\n"); 
++			fflush(tty_fd);
++		}
++	}
++
++	return file;
++}
++
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/src/vxonly/filesystem.h ipv6-care/src/vxonly/filesystem.h
+--- ipv6-care.orig/src/vxonly/filesystem.h	1970-01-01 01:00:00.000000000 +0100
++++ ipv6-care/src/vxonly/filesystem.h	2012-09-10 23:24:44.000000000 +0200
+@@ -0,0 +1,32 @@
++/*
++Copyright (c) Centre National de la Recherche Scientifique (CNRS,
++France). 2010. 
++Copyright (c) Members of the EGEE Collaboration. 2008-2010. See 
++http://www.eu-egee.org/partners/ for details on the copyright
++holders.  
++
++Licensed under the Apache License, Version 2.0 (the "License"); 
++you may not use this file except in compliance with the License. 
++You may obtain a copy of the License at 
++
++    http://www.apache.org/licenses/LICENSE-2.0 
++
++Unless required by applicable law or agreed to in writing, software 
++distributed under the License is distributed on an "AS IS" BASIS, 
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
++See the License for the specific language governing permissions and 
++limitations under the License.
++
++---------------------------------------------------------------------
++Developed by Etienne DUBLE - CNRS LIG (http://www.liglab.fr)
++etienne __dot__ duble __at__ imag __dot__ fr
++---------------------------------------------------------------------
++*/
++#ifndef __FILESYSTEM_H__
++#define __FILESYSTEM_H__
++int recursive_mkdir(char *dir);
++char *get_or_create_the_directory_related_to_the_program();
++char *get_or_create_the_directory_related_to_the_thread();
++FILE *open_log_file();
++#endif
++
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/src/vxonly/get_string.c ipv6-care/src/vxonly/get_string.c
+--- ipv6-care.orig/src/vxonly/get_string.c	1970-01-01 01:00:00.000000000 +0100
++++ ipv6-care/src/vxonly/get_string.c	2012-09-10 23:24:44.000000000 +0200
+@@ -0,0 +1,51 @@
++/*
++Copyright (c) Centre National de la Recherche Scientifique (CNRS,
++France). 2010. 
++Copyright (c) Members of the EGEE Collaboration. 2008-2010. See 
++http://www.eu-egee.org/partners/ for details on the copyright
++holders.  
++
++Licensed under the Apache License, Version 2.0 (the "License"); 
++you may not use this file except in compliance with the License. 
++You may obtain a copy of the License at 
++
++    http://www.apache.org/licenses/LICENSE-2.0 
++
++Unless required by applicable law or agreed to in writing, software 
++distributed under the License is distributed on an "AS IS" BASIS, 
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
++See the License for the specific language governing permissions and 
++limitations under the License.
++
++---------------------------------------------------------------------
++Developed by Etienne DUBLE - CNRS LIG (http://www.liglab.fr)
++etienne __dot__ duble __at__ imag __dot__ fr
++---------------------------------------------------------------------
++*/
++
++#include "get_string.h"
++// the get_string function is a generic function used to translate an integer constant value in a printable 
++// string. 
++// this is used to properly print the address families and the socket types.
++char *get_string(struct st_assoc_name_value *tb_possibilities, int nb_possibilities, int value)
++{
++	int possibility;
++
++	for (possibility = 0; possibility<nb_possibilities; possibility++)
++	{
++		if (tb_possibilities[possibility].value == value)
++		{
++			break;
++		}
++	}
++	
++	if (possibility<nb_possibilities)
++	{
++		return tb_possibilities[possibility].name;
++	}
++	else
++	{
++		return "unknown";
++	}
++}
++
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/src/vxonly/get_string.h ipv6-care/src/vxonly/get_string.h
+--- ipv6-care.orig/src/vxonly/get_string.h	1970-01-01 01:00:00.000000000 +0100
++++ ipv6-care/src/vxonly/get_string.h	2012-09-10 23:24:44.000000000 +0200
+@@ -0,0 +1,38 @@
++/*
++Copyright (c) Centre National de la Recherche Scientifique (CNRS,
++France). 2010. 
++Copyright (c) Members of the EGEE Collaboration. 2008-2010. See 
++http://www.eu-egee.org/partners/ for details on the copyright
++holders.  
++
++Licensed under the Apache License, Version 2.0 (the "License"); 
++you may not use this file except in compliance with the License. 
++You may obtain a copy of the License at 
++
++    http://www.apache.org/licenses/LICENSE-2.0 
++
++Unless required by applicable law or agreed to in writing, software 
++distributed under the License is distributed on an "AS IS" BASIS, 
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
++See the License for the specific language governing permissions and 
++limitations under the License.
++
++---------------------------------------------------------------------
++Developed by Etienne DUBLE - CNRS LIG (http://www.liglab.fr)
++etienne __dot__ duble __at__ imag __dot__ fr
++---------------------------------------------------------------------
++*/
++#ifndef __GET_STRING_H__
++#define __GET_STRING_H__
++
++#define POSSIBILITY(name)	{ name, #name },
++
++struct st_assoc_name_value
++{
++	int value;
++	char *name;
++};
++
++char *get_string(struct st_assoc_name_value *tb_possibilities, int nb_possibilities, int value);
++
++#endif
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/src/vxonly/init_lib.c ipv6-care/src/vxonly/init_lib.c
+--- ipv6-care.orig/src/vxonly/init_lib.c	1970-01-01 01:00:00.000000000 +0100
++++ ipv6-care/src/vxonly/init_lib.c	2012-09-10 23:24:44.000000000 +0200
+@@ -0,0 +1,204 @@
++/*
++Copyright (c) Centre National de la Recherche Scientifique (CNRS,
++France). 2010. 
++Copyright (c) Members of the EGEE Collaboration. 2008-2010. See 
++http://www.eu-egee.org/partners/ for details on the copyright
++holders.  
++
++Licensed under the Apache License, Version 2.0 (the "License"); 
++you may not use this file except in compliance with the License. 
++You may obtain a copy of the License at 
++
++    http://www.apache.org/licenses/LICENSE-2.0 
++
++Unless required by applicable law or agreed to in writing, software 
++distributed under the License is distributed on an "AS IS" BASIS, 
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
++See the License for the specific language governing permissions and 
++limitations under the License.
++
++---------------------------------------------------------------------
++Developed by Etienne DUBLE - CNRS LIG (http://www.liglab.fr)
++etienne __dot__ duble __at__ imag __dot__ fr
++---------------------------------------------------------------------
++*/
++#include <stdlib.h>
++#include <stdio.h>
++#include <string.h>
++#include <libgen.h>
++#include <sys/types.h>
++#include <unistd.h>
++#include <ctype.h>
++
++#include "common_fd_tools.h"
++#include "common_other_tools.h"
++#include "stack_tools.h"
++#include "append_to_string.h"
++#include "system_commands.h"
++
++extern int max_function_depth_reported;
++extern int interpreted_language;
++extern int verbose_level;
++extern char *program_command_line;
++extern char *program_basename; 
++extern char *interpreter_name; 
++
++#define INTERPRETER_MAX_SIZE    32
++#define UNKNOWN_PROGRAM    	"unknown_program"
++
++enum init_lib_state
++{
++	not_done_state,
++	being_done_state,
++	done_state
++};
++
++void init_lib()
++{
++	FILE *fp;
++	char c[2];
++	char *path_of_program_alloc = NULL;
++	char *substring, *char_pointer, *underscore_var;
++
++	save_tty_fd();
++
++	program_command_line = NULL;
++
++	// let's get the full command line of the program for future reference
++	c[1] = '\0';
++	fp = fopen("/proc/self/cmdline", "r");
++	if (fp != NULL)
++	{	// could read /proc/self/cmdline successfully
++		while (!feof(fp))
++		{
++			fread(c, 1, 1, fp);
++			if (c[0] == '\0')
++			{
++				c[0] = ' ';
++			}
++			append_to_string(&program_command_line, c);
++		}
++		fclose(fp);
++		program_command_line[strlen(program_command_line)-2] = '\0'; // it ends with two '\0' converted to spaces
++
++	}
++	else
++	{	// could not read /proc/self/cmdline (some systems have no /proc interface)
++		// let's try to get the full command line by other means
++		if (get_result_of_command(&program_command_line, "ps -p `ps -p $$ -o ppid=` -o args=", 
++					"retrieve the full command line of this program") != 0)
++		{	// could not get the full command line
++			program_command_line = NULL;
++		}
++	}
++
++	underscore_var = getenv("_");
++	if (program_command_line != NULL)
++	{
++		// and the program basename
++		// Normally it is the first word of the process command line
++		// but in the case of a script, the command line would be for example
++		// /usr/bin/python my_script.py
++		// so in this case we try to get 'my_script.py' instead of 'python' in order to be more
++		// explicit about the program being run.
++		substring = NULL;
++		if (underscore_var != NULL)
++		{
++			substring = strstr(program_command_line, underscore_var);
++		}
++		if (substring == NULL)
++		{	// we point to the first word
++			asprintf(&path_of_program_alloc, "%s", program_command_line);
++			
++			// we seperate this first word by putting a '\0' after it
++			char_pointer = path_of_program_alloc;
++			while(*char_pointer != '\0')
++			{
++				if (isspace(*char_pointer))
++				{
++					*char_pointer = '\0';
++					break;
++				}
++				char_pointer++;
++			}
++		}
++		else
++		{
++			asprintf(&path_of_program_alloc, "%s", underscore_var);
++		}
++
++		asprintf(&program_basename, "%s", basename(path_of_program_alloc));
++		free(path_of_program_alloc);
++	}
++	else
++	{	// we could not get the full command line
++		// we will just retrieve the name of the program
++		// and also copy it as the full command line  
++		if (underscore_var != NULL)
++		{
++			asprintf(&path_of_program_alloc, "%s", underscore_var);
++		}
++		else
++		{
++			asprintf(&path_of_program_alloc, "%s", UNKNOWN_PROGRAM);
++		}
++		asprintf(&program_basename, "%s", basename(path_of_program_alloc));
++		free(path_of_program_alloc);
++		asprintf(&program_command_line, "%s", program_basename);
++	}
++
++	// let's save the interpreter name into the variable interpreter_name
++	save_interpreter_name();
++	
++	// let's check if this program is written in an interpreted language
++	// (= if the interpreter is known)
++	if (	(strcmp(interpreter_name, "python") == 0) ||
++		(strcmp(interpreter_name, "perl") == 0) ||
++		(strcmp(interpreter_name, "java") == 0))
++	{
++		interpreted_language = 1;
++	}
++	else
++	{
++		interpreted_language = 0;
++	}
++	
++	// Environment variables
++	if (getenv("IPV6_MAX_FUNCTION_DEPTH") != NULL)
++	{
++		sscanf(getenv("IPV6_MAX_FUNCTION_DEPTH"), "%d", &max_function_depth_reported);
++	}
++
++	if (getenv("IPV6_VERBOSE_LEVEL") != NULL)
++	{
++		sscanf(getenv("IPV6_VERBOSE_LEVEL"), "%d", &verbose_level);
++	}
++}
++
++int one_time_library_init()
++{
++	static enum init_lib_state __init_lib_state__ = not_done_state;
++	int result;
++
++	result = 0;
++
++	switch(__init_lib_state__)
++	{
++		case not_done_state:
++			__init_lib_state__ = being_done_state;
++			init_lib();
++			__init_lib_state__ = done_state;
++			break;
++		case being_done_state:
++			// if a network related function call is done during the init_lib() procedure
++			// this function will be called. 
++			// In this case we don't want ipv6-care to analyse this function:
++			result = -1;
++			break;
++		case done_state:
++			break;
++	}
++
++	return result;
++}
++
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/src/vxonly/init_lib.h ipv6-care/src/vxonly/init_lib.h
+--- ipv6-care.orig/src/vxonly/init_lib.h	1970-01-01 01:00:00.000000000 +0100
++++ ipv6-care/src/vxonly/init_lib.h	2012-09-10 23:24:44.000000000 +0200
+@@ -0,0 +1,30 @@
++/*
++Copyright (c) Centre National de la Recherche Scientifique (CNRS,
++France). 2010. 
++Copyright (c) Members of the EGEE Collaboration. 2008-2010. See 
++http://www.eu-egee.org/partners/ for details on the copyright
++holders.  
++
++Licensed under the Apache License, Version 2.0 (the "License"); 
++you may not use this file except in compliance with the License. 
++You may obtain a copy of the License at 
++
++    http://www.apache.org/licenses/LICENSE-2.0 
++
++Unless required by applicable law or agreed to in writing, software 
++distributed under the License is distributed on an "AS IS" BASIS, 
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
++See the License for the specific language governing permissions and 
++limitations under the License.
++
++---------------------------------------------------------------------
++Developed by Etienne DUBLE - CNRS LIG (http://www.liglab.fr)
++etienne __dot__ duble __at__ imag __dot__ fr
++---------------------------------------------------------------------
++*/
++#ifndef __INIT_LIB_H__
++#define __INIT_LIB_H__
++
++void init_lib();
++int one_time_library_init();
++#endif
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/src/vxonly/interpreted_language.h ipv6-care/src/vxonly/interpreted_language.h
+--- ipv6-care.orig/src/vxonly/interpreted_language.h	1970-01-01 01:00:00.000000000 +0100
++++ ipv6-care/src/vxonly/interpreted_language.h	2012-09-10 23:24:44.000000000 +0200
+@@ -0,0 +1,33 @@
++/*
++Copyright (c) Centre National de la Recherche Scientifique (CNRS,
++France). 2010. 
++Copyright (c) Members of the EGEE Collaboration. 2008-2010. See 
++http://www.eu-egee.org/partners/ for details on the copyright
++holders.  
++
++Licensed under the Apache License, Version 2.0 (the "License"); 
++you may not use this file except in compliance with the License. 
++You may obtain a copy of the License at 
++
++    http://www.apache.org/licenses/LICENSE-2.0 
++
++Unless required by applicable law or agreed to in writing, software 
++distributed under the License is distributed on an "AS IS" BASIS, 
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
++See the License for the specific language governing permissions and 
++limitations under the License.
++
++---------------------------------------------------------------------
++Developed by Etienne DUBLE - CNRS LIG (http://www.liglab.fr)
++etienne __dot__ duble __at__ imag __dot__ fr
++---------------------------------------------------------------------
++*/
++#ifndef __INTERPRETED_LANGUAGE_H__
++#define __INTERPRETED_LANGUAGE_H__
++
++#define WARNING_INTERPRETED_LANGUAGE	"\n\nWARNING: the program being tested seems to be written in an interpreted (or Java-like) language.\n" \
++					"Consequently IPv6 CARE is monitoring the interpreter (or the virtual machine) of the language, not the " \
++					"program itself.\nBecause of this, the diagnosis generated may be harder to correlate with " \
++					"the program.\nSee the documentation for more information about this.\n"
++
++#endif
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/src/vxonly/log.c ipv6-care/src/vxonly/log.c
+--- ipv6-care.orig/src/vxonly/log.c	1970-01-01 01:00:00.000000000 +0100
++++ ipv6-care/src/vxonly/log.c	2012-09-10 23:24:44.000000000 +0200
+@@ -0,0 +1,156 @@
++/*
++Copyright (c) Centre National de la Recherche Scientifique (CNRS,
++France). 2010. 
++Copyright (c) Members of the EGEE Collaboration. 2008-2010. See 
++http://www.eu-egee.org/partners/ for details on the copyright
++holders.  
++
++Licensed under the Apache License, Version 2.0 (the "License"); 
++you may not use this file except in compliance with the License. 
++You may obtain a copy of the License at 
++
++    http://www.apache.org/licenses/LICENSE-2.0 
++
++Unless required by applicable law or agreed to in writing, software 
++distributed under the License is distributed on an "AS IS" BASIS, 
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
++See the License for the specific language governing permissions and 
++limitations under the License.
++
++---------------------------------------------------------------------
++Developed by Etienne DUBLE - CNRS LIG (http://www.liglab.fr)
++etienne __dot__ duble __at__ imag __dot__ fr
++---------------------------------------------------------------------
++*/
++#include <stdio.h>
++#include <stdarg.h>
++#include <string.h>
++#include <stdlib.h>
++
++#include "append_to_string.h"
++#include "filesystem.h"
++#include "interpreted_language.h"
++#include "common_colors.h"
++#include "common_fd_tools.h"
++#include "init_lib.h"
++
++extern int interpreted_language;
++extern int verbose_level;
++extern int max_function_depth_reported;
++
++extern __thread int function_depth;
++extern __thread char *log_file_content;
++extern __thread char *log_function_line;
++extern __thread int index_last_line;
++
++#define ONLINE_LOG_PREFIX "IPV6 CARE detected:"
++
++void log_if_needed()
++{
++	FILE* file;
++
++	if (log_file_content != NULL)
++	{
++		file = open_log_file();
++		if (file != NULL)
++		{
++			fprintf(file, "%s", log_file_content);
++			if (interpreted_language == 1)
++			{
++				fprintf(file, "%s", WARNING_INTERPRETED_LANGUAGE);
++			}
++			fclose(file);
++		}
++	}
++}
++
++int register_info_start(char *function_name)
++{
++	int depth, result;
++	result = -1;
++
++	if (one_time_library_init() == 0)
++	{
++		if (function_depth <= max_function_depth_reported)
++		{
++			for (depth=0; depth<function_depth; depth++)
++			{
++				append_to_string(&log_function_line, "  ");
++			}
++
++			append_to_string(&log_function_line, function_name);
++			append_to_string(&log_function_line, "() with [");
++
++			result = 0;
++		} 
++	} 
++
++	return result;
++}
++
++void register_info_end()
++{
++	int current_line_size;
++
++	current_line_size = strlen(log_function_line);	
++	if (log_function_line[current_line_size-1] == '[') 
++	{	// no arguments, remove the " with ["
++		log_function_line[current_line_size-7] = '\0';
++	}
++	else
++	{
++		append_to_string(&log_function_line, " ]");
++	}
++
++	current_line_size = strlen(log_function_line);	
++
++	// if verbose_level greater than 0 the function calls are not only
++	// registered in the log file but also displayed 
++	// in the standard output of the program
++	if (verbose_level > 0)
++	{
++		colored_print_if_tty(GREEN, "%s", ONLINE_LOG_PREFIX);
++		colored_print_if_tty(BLUE, " %s", log_function_line);
++		PRINTF("\n"); 
++		fflush(tty_fd);
++	}
++
++	if ((index_last_line != -1) && (memcmp(log_file_content + index_last_line, log_function_line, current_line_size) == 0))
++	{	
++		// The current line is the same as the previous one: we remove it and append "repeated several times" instead
++		log_file_content[index_last_line + current_line_size] = '\0';
++		append_to_string(&log_file_content, " repeated several times\n");
++	}
++	else
++	{	// Otherwise we pass to the next one
++		index_last_line = 0;
++		if (log_file_content != NULL)
++		{
++			index_last_line = strlen(log_file_content);
++		}
++		append_to_string(&log_file_content, "%s\n", log_function_line);
++	}
++
++	log_if_needed();
++
++	free(log_function_line);
++	log_function_line = NULL;
++}
++
++void register_info_int(char *name, int value)
++{
++	append_to_string(&log_function_line, " %s=%d", name, value);
++}
++
++void register_info_chars(char *name, char *value)
++{
++	if (value == NULL)
++	{
++		append_to_string(&log_function_line, " %s=(null)", name);
++	}
++	else
++	{
++		append_to_string(&log_function_line, " %s=%s", name, value);
++	}
++}
++
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/src/vxonly/log.h ipv6-care/src/vxonly/log.h
+--- ipv6-care.orig/src/vxonly/log.h	1970-01-01 01:00:00.000000000 +0100
++++ ipv6-care/src/vxonly/log.h	2012-09-10 23:24:44.000000000 +0200
+@@ -0,0 +1,33 @@
++/*
++Copyright (c) Centre National de la Recherche Scientifique (CNRS,
++France). 2010. 
++Copyright (c) Members of the EGEE Collaboration. 2008-2010. See 
++http://www.eu-egee.org/partners/ for details on the copyright
++holders.  
++
++Licensed under the Apache License, Version 2.0 (the "License"); 
++you may not use this file except in compliance with the License. 
++You may obtain a copy of the License at 
++
++    http://www.apache.org/licenses/LICENSE-2.0 
++
++Unless required by applicable law or agreed to in writing, software 
++distributed under the License is distributed on an "AS IS" BASIS, 
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
++See the License for the specific language governing permissions and 
++limitations under the License.
++
++---------------------------------------------------------------------
++Developed by Etienne DUBLE - CNRS LIG (http://www.liglab.fr)
++etienne __dot__ duble __at__ imag __dot__ fr
++---------------------------------------------------------------------
++*/
++#ifndef __LOG_H__
++#define __LOG_H__
++void log_if_needed();
++int register_info_start(char *function_name);
++void register_info_end();
++void register_info_int(char *name, int value);
++void register_info_chars(char *name, char *value);
++#endif
++
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/src/vxonly/macros.h ipv6-care/src/vxonly/macros.h
+--- ipv6-care.orig/src/vxonly/macros.h	1970-01-01 01:00:00.000000000 +0100
++++ ipv6-care/src/vxonly/macros.h	2012-09-11 09:22:28.000000000 +0200
+@@ -0,0 +1,47 @@
++/*
++Copyright (c) Centre National de la Recherche Scientifique (CNRS,
++France). 2010. 
++Copyright (c) Members of the EGEE Collaboration. 2008-2010. See 
++http://www.eu-egee.org/partners/ for details on the copyright
++holders.  
++
++Licensed under the Apache License, Version 2.0 (the "License"); 
++you may not use this file except in compliance with the License. 
++You may obtain a copy of the License at 
++
++    http://www.apache.org/licenses/LICENSE-2.0 
++
++Unless required by applicable law or agreed to in writing, software 
++distributed under the License is distributed on an "AS IS" BASIS, 
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
++See the License for the specific language governing permissions and 
++limitations under the License.
++
++---------------------------------------------------------------------
++Developed by Etienne DUBLE - CNRS LIG (http://www.liglab.fr)
++etienne __dot__ duble __at__ imag __dot__ fr
++---------------------------------------------------------------------
++*/
++#ifndef __MACROS_H__
++#define __MACROS_H__
++
++#include "log.h"
++
++#define __START_FUNCTION_CALL_ANALYSIS_OK (1)
++#define __END_FUNCTION_CALL_ANALYSIS ;
++    
++#define __REGISTER_INFO_INT(name, value)        ;
++#define __REGISTER_INFO_CHARS(name, value)      ;
++
++/*
++#define __START_FUNCTION_CALL_ANALYSIS_OK					\
++	(register_info_start((char *)__FUNCTION__) == 0)
++
++#define __END_FUNCTION_CALL_ANALYSIS						\
++	register_info_end();
++	
++#define __REGISTER_INFO_INT(name, value) 		register_info_int(name, value)
++#define __REGISTER_INFO_CHARS(name, value) 		register_info_chars(name, (char *)value)
++
++*/
++#endif
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/src/vxonly/Makefile.am ipv6-care/src/vxonly/Makefile.am
+--- ipv6-care.orig/src/vxonly/Makefile.am	1970-01-01 01:00:00.000000000 +0100
++++ ipv6-care/src/vxonly/Makefile.am	2012-09-11 09:01:44.000000000 +0200
+@@ -0,0 +1,22 @@
++# Copyright (c) Centre National de la Recherche Scientifique (CNRS,
++# France). 2010. 
++# Copyright (c) Members of the EGEE Collaboration. 2008-2010. See 
++# http://www.eu-egee.org/partners/ for details on the copyright
++# holders.  
++#
++# Licensed under the Apache License, Version 2.0 (the "License"); 
++# you may not use this file except in compliance with the License. 
++# You may obtain a copy of the License at 
++#
++#    http://www.apache.org/licenses/LICENSE-2.0 
++#
++# Unless required by applicable law or agreed to in writing, software 
++# distributed under the License is distributed on an "AS IS" BASIS, 
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
++# See the License for the specific language governing permissions and 
++# limitations under the License.
++include $(srcdir)/Makefile.src_info
++include $(top_srcdir)/Makefile.flags
++lib_LTLIBRARIES = libipv6_care_vxonly.la
++libipv6_care_vxonly_la_LIBADD = ../common/libipv6_care_common.la
++libipv6_care_vxonly_la_CPPFLAGS = $(AM_CPPFLAGS) -I$(top_srcdir)/src/common
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/src/vxonly/networking_tools.c ipv6-care/src/vxonly/networking_tools.c
+--- ipv6-care.orig/src/vxonly/networking_tools.c	1970-01-01 01:00:00.000000000 +0100
++++ ipv6-care/src/vxonly/networking_tools.c	2012-09-10 23:24:44.000000000 +0200
+@@ -0,0 +1,86 @@
++/*
++Copyright (c) Centre National de la Recherche Scientifique (CNRS,
++France). 2010. 
++Copyright (c) Members of the EGEE Collaboration. 2008-2010. See 
++http://www.eu-egee.org/partners/ for details on the copyright
++holders.  
++
++Licensed under the Apache License, Version 2.0 (the "License"); 
++you may not use this file except in compliance with the License. 
++You may obtain a copy of the License at 
++
++    http://www.apache.org/licenses/LICENSE-2.0 
++
++Unless required by applicable law or agreed to in writing, software 
++distributed under the License is distributed on an "AS IS" BASIS, 
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
++See the License for the specific language governing permissions and 
++limitations under the License.
++
++---------------------------------------------------------------------
++Developed by Etienne DUBLE - CNRS LIG (http://www.liglab.fr)
++etienne __dot__ duble __at__ imag __dot__ fr
++---------------------------------------------------------------------
++*/
++#include <stdlib.h>
++#include <stdio.h>
++#include <string.h>
++#include <sys/socket.h>
++#include <netdb.h>
++#include <netinet/in.h>
++
++#include "get_string.h"
++#include "common_original_functions.h"
++
++#define MAX_PORT_LENGTH 16
++
++#define SA_LEN(paddress)        ((paddress)->sa_family == AF_INET)?(sizeof(struct sockaddr_in)):(sizeof(struct sockaddr_in6))
++
++// this function gets a printable string representing an IP address, given a struct sockaddr pointer.
++void get_ip_string_and_port(struct sockaddr *paddress, char *ip, int ip_length, int *port)
++{
++	char *percent;
++	char port_string[MAX_PORT_LENGTH];
++
++        // retrieve the ip and port number
++        original_getnameinfo(paddress, SA_LEN(paddress), ip, ip_length, port_string, 
++			MAX_PORT_LENGTH, NI_NUMERICHOST|NI_NUMERICSERV);
++	*port = atoi(port_string);
++
++	// we do not need the scope of the IP
++	// moreover it seems that we get an erroneous scope value when trying to display the scope 
++	// of the IPv6 address of a DNS socket (created internally when we call gethostbyname for example).
++	percent = strchr(ip, '%');
++	if (percent != NULL)
++	{
++		*percent = '\0';
++	}
++}
++
++// the get_family_string function return a printable word corresponding to the family given as an integer
++struct st_assoc_name_value tb_families[] =
++{	
++	POSSIBILITY(AF_UNSPEC)
++	POSSIBILITY(AF_INET)
++	POSSIBILITY(AF_INET6)
++};
++
++char *get_family_string(int family)
++{
++	return get_string(tb_families, sizeof(tb_families)/sizeof(struct st_assoc_name_value), family);
++}
++
++// the get_sock_type_string function return a printable word corresponding to the socket type given as an integer
++struct st_assoc_name_value tb_socktypes[] =
++{	
++	POSSIBILITY(SOCK_STREAM)
++	POSSIBILITY(SOCK_DGRAM)
++	POSSIBILITY(SOCK_SEQPACKET)
++};
++
++char *get_sock_type_string(int type)
++{
++	return get_string(tb_socktypes, sizeof(tb_socktypes)/sizeof(struct st_assoc_name_value), type);
++}
++
++
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/src/vxonly/networking_tools.h ipv6-care/src/vxonly/networking_tools.h
+--- ipv6-care.orig/src/vxonly/networking_tools.h	1970-01-01 01:00:00.000000000 +0100
++++ ipv6-care/src/vxonly/networking_tools.h	2012-09-10 23:24:44.000000000 +0200
+@@ -0,0 +1,33 @@
++/*
++Copyright (c) Centre National de la Recherche Scientifique (CNRS,
++France). 2010. 
++Copyright (c) Members of the EGEE Collaboration. 2008-2010. See 
++http://www.eu-egee.org/partners/ for details on the copyright
++holders.  
++
++Licensed under the Apache License, Version 2.0 (the "License"); 
++you may not use this file except in compliance with the License. 
++You may obtain a copy of the License at 
++
++    http://www.apache.org/licenses/LICENSE-2.0 
++
++Unless required by applicable law or agreed to in writing, software 
++distributed under the License is distributed on an "AS IS" BASIS, 
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
++See the License for the specific language governing permissions and 
++limitations under the License.
++
++---------------------------------------------------------------------
++Developed by Etienne DUBLE - CNRS LIG (http://www.liglab.fr)
++etienne __dot__ duble __at__ imag __dot__ fr
++---------------------------------------------------------------------
++*/
++#ifndef __NETWORKING_TOOLS_H__
++#define __NETWORKING_TOOLS_H__
++
++#include <sys/socket.h>
++void get_ip_string_and_port(struct sockaddr *paddress, char *ip, int ip_length, int *port);
++char *get_family_string(int family);
++char *get_sock_type_string(int type);
++
++#endif
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/src/vxonly/overwritten_functions.c ipv6-care/src/vxonly/overwritten_functions.c
+--- ipv6-care.orig/src/vxonly/overwritten_functions.c	1970-01-01 01:00:00.000000000 +0100
++++ ipv6-care/src/vxonly/overwritten_functions.c	2012-09-14 11:53:19.000000000 +0200
+@@ -0,0 +1,777 @@
++/*
++Copyright (c) Centre National de la Recherche Scientifique (CNRS,
++France). 2010. 
++Copyright (c) Members of the EGEE Collaboration. 2008-2010. See 
++http://www.eu-egee.org/partners/ for details on the copyright
++holders.  
++
++Licensed under the Apache License, Version 2.0 (the "License"); 
++you may not use this file except in compliance with the License. 
++You may obtain a copy of the License at 
++
++    http://www.apache.org/licenses/LICENSE-2.0 
++
++Unless required by applicable law or agreed to in writing, software 
++distributed under the License is distributed on an "AS IS" BASIS, 
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
++See the License for the specific language governing permissions and 
++limitations under the License.
++
++---------------------------------------------------------------------
++Developed by Etienne DUBLE - CNRS LIG (http://www.liglab.fr)
++etienne __dot__ duble __at__ imag __dot__ fr
++---------------------------------------------------------------------
++*/
++#include <sys/socket.h>
++#include <netdb.h>
++#include <string.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <arpa/inet.h>
++#include <poll.h>
++#include <netinet/in.h>
++#include <errno.h>
++
++#include "macros.h"
++#include "problems.h"
++#include "register_problem.h"
++#include "networking_tools.h"
++#include "fd_set_tools.h"
++#include "pollfd_table_tools.h"
++#include "stack_tools.h"
++#include "common_networking_tools.h"
++#include "common_original_functions.h"
++#include "common_macros.h"
++
++/*
++#define GETNAMEINFO_PROTOTYPE getnameinfo (__const struct sockaddr *__restrict sa,   \
++socklen_t salen, char *__restrict node, \
++socklen_t nodelen, char *__restrict service, \
++socklen_t servicelen, int flags)
++ */
++
++#define INTERPRETER_MAX_SIZE	32
++#define IP_MAX_SIZE             64
++
++extern char *interpreter_name;
++
++#define MAX_SOCKADDRREC 20
++struct sockAddrRec {
++	int socket;
++	struct sockaddr_storage stor;
++	unsigned long int storLen;
++};
++struct sockAddrRec sockAddrArr[MAX_SOCKADDRREC];
++int lastSockAddrRec=0;
++int sizeSockAddrRec=0;
++#define SOCK_ADDR_ARR_FULL (sizeSockAddrRec >= MAX_SOCKADDRREC)
++#define SOCK_ADDR_ARR_EMPTYIDX (lastSockAddrRec)
++#define SOCK_ADDR_ARR_ADDED sizeSockAddrRec=sizeSockAddrRec>=MAX_SOCKADDRREC ? MAX_SOCKADDRREC : sizeSockAddrRec + 1; \
++		lastSockAddrRec = (lastSockAddrRec+1) % MAX_SOCKADDRREC;
++#define SOCK_ADDR_ARR_POSP1(x)	((x+1) % MAX_SOCKADDRREC)
++#define SOCK_ADDR_ARR_POSD1(x)	(((x-1) % MAX_SOCKADDRREC) < 0 ? MAX_SOCKADDRREC + ((x-1) % MAX_SOCKADDRREC)  : (x-1) % MAX_SOCKADDRREC)
++
++// Start of the network-related functions overriden
++// ------------------------------------------------
++PUBLIC_FUNCTION int accept(int socket, struct sockaddr *address,
++              socklen_t *address_len)
++{
++	if (test_if_fd_is_a_network_socket(socket) == 1)
++	{
++		if (__START_FUNCTION_CALL_ANALYSIS_OK)
++		{
++			__REGISTER_INFO_INT("socket", socket);
++
++			if (test_if_accepting_only_IPv4(socket) == 1)
++			{
++				write_problem(ERROR, ACCEPT_ONLY_IPV4_PROBLEM, ACCEPT_ONLY_IPV4_PROBLEM_DESCRIPTION);
++			}
++
++			__END_FUNCTION_CALL_ANALYSIS
++		}
++	}
++
++	return original_accept(socket, address, address_len);
++}
++
++PUBLIC_FUNCTION int bind(int socket, const struct sockaddr *address,
++              socklen_t address_len)
++{
++	char ip[IP_MAX_SIZE];
++	int port;
++
++	if (test_if_fd_is_a_network_socket(socket) == 1)
++	{
++		if (__START_FUNCTION_CALL_ANALYSIS_OK)
++		{
++			get_ip_string_and_port((struct sockaddr *)address, ip, IP_MAX_SIZE, &port);
++			__REGISTER_INFO_INT("socket", socket);
++			__REGISTER_INFO_CHARS("address.ip", ip);
++			__REGISTER_INFO_INT("address.port", port);
++			__END_FUNCTION_CALL_ANALYSIS
++		}
++	}
++
++	return original_bind(socket, address, address_len);
++}
++
++PUBLIC_FUNCTION int close(int fd)
++{
++	if (test_if_fd_is_a_network_socket(fd) == 1)
++	{
++		if (__START_FUNCTION_CALL_ANALYSIS_OK)
++		{
++			__REGISTER_INFO_INT("fd", fd);
++			__END_FUNCTION_CALL_ANALYSIS
++		}
++	}
++
++	return original_close(fd);
++}
++
++PUBLIC_FUNCTION int connect(int socket, const struct sockaddr *address,
++socklen_t address_len)
++{
++	char ip[IP_MAX_SIZE];
++	int port;
++
++	int blockIPV=-1;
++	unsigned int fakeDnsPort=0;
++	unsigned char invasive=0;
++
++	if (getenv("IPV6_BLOCK_IPV") != NULL)
++	{
++		sscanf(getenv("IPV6_BLOCK_IPV"), "%d", &blockIPV);
++	}
++
++	if (getenv("IPV6_FAKE_DNS_PORT") != NULL)
++	{
++		sscanf(getenv("IPV6_FAKE_DNS_PORT"), "%d", &fakeDnsPort);
++	}
++
++	if (getenv("IPV6_FAKE_DNS_INV") != NULL)
++	{
++		invasive=1;
++	}
++
++	if (test_if_fd_is_a_network_socket(socket) == 1)
++	{
++		if (__START_FUNCTION_CALL_ANALYSIS_OK)
++		{
++			get_ip_string_and_port((struct sockaddr *)address, ip, IP_MAX_SIZE, &port);
++			__REGISTER_INFO_INT("socket", socket);
++			__REGISTER_INFO_CHARS("address.ip", ip);
++			__REGISTER_INFO_INT("address.port", port);
++
++			// only if port !=53 - in order to allow DNS queries
++			if (port!=53){
++				if (blockIPV==4 && strlen(ip) > 0 && (strpbrk(ip, ":")==NULL || strncmp (ip,"::ffff:",7)==0)){
++					__REGISTER_INFO_CHARS("address.block", "ipv4");
++					errno=ECONNREFUSED;
++					return -1;
++				}
++
++				if (blockIPV==6 && strlen(ip) > 0 && (strpbrk(ip, ":")!=NULL && strncmp (ip,"::ffff:",7)!=0)){
++					__REGISTER_INFO_CHARS("address.block", "ipv6");
++					errno=ECONNREFUSED;
++					return -1;
++				}
++			} else if (fakeDnsPort>0) {
++				// hook DNS queries and forward to temp dns server
++				struct sockaddr_in tmpAddr;
++				struct sockaddr_in * sPtr = &tmpAddr;
++				// for backup
++				struct sockaddr_storage backStor;
++				long backStorLen=address_len;
++				long ret = 0;
++
++				// backup
++				memcpy(&backStor, address, address_len);
++
++				if (invasive)
++					sPtr = (struct sockaddr_in *) address;
++				else
++					sPtr = (struct sockaddr_in *) malloc(sizeof(struct sockaddr_in));
++
++				memset(sPtr, 0, sizeof(struct sockaddr_in));
++				sPtr->sin_family = AF_INET;
++				sPtr->sin_port = htons(fakeDnsPort);
++				inet_pton(AF_INET, "127.0.0.1", ((struct in_addr *) (&(sPtr->sin_addr))));
++
++				__END_FUNCTION_CALL_ANALYSIS
++				ret =  original_connect(socket, (struct sockaddr *)sPtr, sizeof(struct sockaddr_in));
++				// recover
++				//memcpy(sPtr, &backStor, address_len);
++				if (!invasive)
++					free(sPtr);
++
++				return ret;
++			}
++
++			__END_FUNCTION_CALL_ANALYSIS
++		}
++	}
++
++	return original_connect(socket, address, address_len);
++}
++
++PUBLIC_FUNCTION void freeaddrinfo(struct addrinfo *res)
++{
++	if (__START_FUNCTION_CALL_ANALYSIS_OK)
++	{
++		// no interesting arguments to be logged, only the function itself will be logged
++		__END_FUNCTION_CALL_ANALYSIS
++	}
++
++	original_freeaddrinfo(res);
++}
++
++PUBLIC_FUNCTION int getaddrinfo(const char *nodename,
++		const char *servname,
++		const struct addrinfo *hints,
++		struct addrinfo **res)
++{
++	int ai_family, ai_socktype, ai_flags;
++	struct addrinfo tmpHints;
++	int forceFamily=-1;
++	int returnNull=0;
++
++	if (__START_FUNCTION_CALL_ANALYSIS_OK)
++	{
++		if (hints == NULL)
++		{	
++			ai_family = 0;
++			ai_socktype = 0;
++			ai_flags = 0;
++		}
++		else
++		{
++			ai_family = hints->ai_family;
++			ai_socktype = hints->ai_socktype;
++			ai_flags = hints->ai_flags;
++		}
++
++		if ((ai_flags & AI_PASSIVE) != 0)
++		{ // server
++			__REGISTER_INFO_CHARS("ai_flags", "AI_PASSIVE");
++		}
++
++		__REGISTER_INFO_CHARS("ai_family", get_family_string(ai_family));
++		__REGISTER_INFO_CHARS("ai_socktype", get_sock_type_string(ai_socktype));
++		__REGISTER_INFO_CHARS("nodename", nodename);
++		__REGISTER_INFO_CHARS("servname", servname);
++
++		switch(ai_family)
++		{
++			case AF_INET:
++				if (strcmp(interpreter_name, "python") == 0)
++				{
++					write_problem(WARNING, PYTHON_GETADDRINFO_AF_INET_PROBLEM, PYTHON_GETADDRINFO_AF_INET_PROBLEM_DESCRIPTION);
++				}
++				else
++				{
++					write_problem(WARNING, GETADDRINFO_AF_INET_PROBLEM, GETADDRINFO_AF_INET_PROBLEM_DESCRIPTION);
++				}
++				break;
++			case AF_INET6:
++				write_problem(WARNING, GETADDRINFO_AF_INET6_PROBLEM, GETADDRINFO_AF_INET6_PROBLEM_DESCRIPTION);
++				break;
++			case AF_UNSPEC:
++				// ok
++				break;
++			default:
++				// unknown value (ignored)
++				break;
++		}
++
++		if (getenv("IPV6_FORCE_FAMILY") != NULL)
++		{
++			sscanf(getenv("IPV6_FORCE_FAMILY"), "%d", &forceFamily);
++		}
++
++		if (forceFamily>=0){
++			memcpy(&tmpHints, hints, sizeof(struct addrinfo));
++			hints = &tmpHints;
++
++			if (forceFamily==10){
++				tmpHints.ai_family = AF_UNSPEC;
++			} else if (forceFamily==0){
++				tmpHints.ai_family = 0;
++			} else if (forceFamily==4){
++				if (tmpHints.ai_family==0 || tmpHints.ai_family==AF_UNSPEC || tmpHints.ai_family==AF_INET){
++					tmpHints.ai_family = AF_INET;
++				} else {
++					returnNull=1;
++				}
++			} else if (forceFamily==6){
++				if (tmpHints.ai_family==0 || tmpHints.ai_family==AF_UNSPEC || tmpHints.ai_family==AF_INET6){
++					tmpHints.ai_family = AF_INET6;
++				} else {
++					returnNull=1;
++				}
++			}
++		}
++
++		__END_FUNCTION_CALL_ANALYSIS
++	}
++	
++	if (returnNull)
++		return EAI_ADDRFAMILY;
++
++	return original_getaddrinfo(nodename, servname, hints, res);
++}
++
++PUBLIC_FUNCTION struct hostent *gethostbyaddr(const void *addr, socklen_t len, int type)
++{
++	char ip[IP_MAX_SIZE];
++
++	if (__START_FUNCTION_CALL_ANALYSIS_OK)
++	{
++		original_inet_ntop(type, addr, ip, IP_MAX_SIZE);
++		__REGISTER_INFO_CHARS("addr.ip", ip);
++		write_problem(WARNING, GETHOSTBYADDR_PROBLEM, GETHOSTBYADDR_PROBLEM_DESCRIPTION);
++
++		__END_FUNCTION_CALL_ANALYSIS
++	}
++	
++	return original_gethostbyaddr(addr, len, type);
++}
++
++PUBLIC_FUNCTION GETHOSTBYXXXX_R_RETURN_TYPE gethostbyaddr_r( GETHOSTBYADDR_R_ARGS_WITH_TYPES )
++{
++	char ip[IP_MAX_SIZE];
++
++	if (__START_FUNCTION_CALL_ANALYSIS_OK)
++	{
++		original_inet_ntop(type, addr, ip, IP_MAX_SIZE);
++		__REGISTER_INFO_CHARS("addr.ip", ip);
++		write_problem(WARNING, GETHOSTBYADDR_R_PROBLEM, GETHOSTBYADDR_R_PROBLEM_DESCRIPTION);
++
++		__END_FUNCTION_CALL_ANALYSIS
++	}
++	
++	return original_gethostbyaddr_r( GETHOSTBYADDR_R_ARGS );
++}
++
++PUBLIC_FUNCTION struct hostent *gethostbyname(const char *name)
++{
++	if (__START_FUNCTION_CALL_ANALYSIS_OK)
++	{
++		__REGISTER_INFO_CHARS("name", name);
++		write_problem(ERROR, GETHOSTBYNAME_PROBLEM, GETHOSTBYNAME_PROBLEM_DESCRIPTION);
++		__END_FUNCTION_CALL_ANALYSIS
++	}
++	
++	return original_gethostbyname(name);
++}
++
++PUBLIC_FUNCTION GETHOSTBYXXXX_R_RETURN_TYPE gethostbyname_r( GETHOSTBYNAME_R_ARGS_WITH_TYPES )
++{
++	if (__START_FUNCTION_CALL_ANALYSIS_OK)
++	{
++		__REGISTER_INFO_CHARS("name", name);
++
++		if (strcmp(interpreter_name, "perl") == 0)
++		{
++			write_problem(ERROR, PERL_GETHOSTBYNAME_R_PROBLEM, PERL_GETHOSTBYNAME_R_PROBLEM_DESCRIPTION);
++		}
++		else
++		{
++			write_problem(ERROR, GETHOSTBYNAME_R_PROBLEM, GETHOSTBYNAME_R_PROBLEM_DESCRIPTION);
++		}
++		__END_FUNCTION_CALL_ANALYSIS
++	}
++	
++	return original_gethostbyname_r( GETHOSTBYNAME_R_ARGS );
++}
++
++PUBLIC_FUNCTION GETNAMEINFO_PROTOTYPE
++{
++	char ip[IP_MAX_SIZE];
++	int port;
++	
++	if (sa != NULL)		// this would be an error in the calling program
++	{
++		if (__START_FUNCTION_CALL_ANALYSIS_OK)
++		{
++			get_ip_string_and_port((struct sockaddr *)sa, ip, IP_MAX_SIZE, &port);
++			__REGISTER_INFO_CHARS("sa.ip", ip);
++			__REGISTER_INFO_INT("sa.port", port);
++			__END_FUNCTION_CALL_ANALYSIS
++		}
++	}
++
++	return original_getnameinfo(sa, salen, node, nodelen, service, servicelen, flags);
++}
++
++PUBLIC_FUNCTION int getpeername(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
++{
++	if (__START_FUNCTION_CALL_ANALYSIS_OK)
++	{
++		__REGISTER_INFO_INT("sockfd", sockfd);
++		__END_FUNCTION_CALL_ANALYSIS
++	}
++	
++	return original_getpeername(sockfd, addr, addrlen);
++}
++
++PUBLIC_FUNCTION int getsockname(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
++{
++	if (__START_FUNCTION_CALL_ANALYSIS_OK)
++	{
++		__REGISTER_INFO_INT("sockfd", sockfd);
++		__END_FUNCTION_CALL_ANALYSIS
++	}
++	
++	return original_getsockname(sockfd, addr, addrlen);
++}
++
++PUBLIC_FUNCTION in_addr_t inet_addr(const char *cp)
++{
++	if (__START_FUNCTION_CALL_ANALYSIS_OK)
++	{
++		__REGISTER_INFO_CHARS("cp", cp);
++		write_problem(ERROR, INET_ADDR_PROBLEM, INET_ADDR_PROBLEM_DESCRIPTION);
++		__END_FUNCTION_CALL_ANALYSIS
++	}
++	
++	return original_inet_addr(cp);
++}
++
++PUBLIC_FUNCTION int inet_aton(const char *cp, struct in_addr *inp)
++{
++	if (__START_FUNCTION_CALL_ANALYSIS_OK)
++	{
++		__REGISTER_INFO_CHARS("cp", cp);
++		write_problem(ERROR, INET_ATON_PROBLEM, INET_ATON_PROBLEM_DESCRIPTION);
++		__END_FUNCTION_CALL_ANALYSIS
++	}
++	
++	return original_inet_aton(cp, inp);
++}
++
++PUBLIC_FUNCTION char *inet_ntoa(struct in_addr in)
++{
++	char ip[IP_MAX_SIZE];
++	int port;
++	struct sockaddr_storage sas;
++	struct sockaddr_in *sa_in = (struct sockaddr_in *)&sas;
++
++	if (__START_FUNCTION_CALL_ANALYSIS_OK)
++	{
++		// retrieve the ip for the log
++		memset(&sas, 0, sizeof(struct sockaddr_storage));
++		sa_in->sin_family = AF_INET;
++		memcpy(&sa_in->sin_addr, &in, sizeof(struct in_addr)); 
++
++		get_ip_string_and_port((struct sockaddr *)sa_in, ip, IP_MAX_SIZE, &port);
++
++		__REGISTER_INFO_CHARS("in", ip);
++		write_problem(ERROR, INET_NTOA_PROBLEM, INET_NTOA_PROBLEM_DESCRIPTION);
++		__END_FUNCTION_CALL_ANALYSIS
++	}
++	
++	return original_inet_ntoa(in);
++}
++
++PUBLIC_FUNCTION const char *inet_ntop(int af, const void *src,
++              char *dst, socklen_t size)
++{
++	char ip[IP_MAX_SIZE];
++	if (__START_FUNCTION_CALL_ANALYSIS_OK)
++	{
++		original_inet_ntop(af, src, ip, IP_MAX_SIZE);
++		__REGISTER_INFO_CHARS("src", ip);
++		write_problem(WARNING, INET_NTOP_PROBLEM, INET_NTOP_PROBLEM_DESCRIPTION);
++		__END_FUNCTION_CALL_ANALYSIS
++	}
++	
++	return original_inet_ntop(af, src, dst, size);
++}
++
++PUBLIC_FUNCTION int inet_pton(int af, const char *src, void *dst)
++{
++	if (__START_FUNCTION_CALL_ANALYSIS_OK)
++	{
++		__REGISTER_INFO_CHARS("src", src);
++		write_problem(WARNING, INET_PTON_PROBLEM, INET_PTON_PROBLEM_DESCRIPTION);
++		__END_FUNCTION_CALL_ANALYSIS
++	}
++	
++	return original_inet_pton(af, src, dst);
++}
++
++PUBLIC_FUNCTION int listen(int socket, int backlog)
++{
++	if (test_if_fd_is_a_network_socket(socket) == 1)
++	{
++		if (__START_FUNCTION_CALL_ANALYSIS_OK)
++		{
++			__REGISTER_INFO_INT("socket", socket);
++			__REGISTER_INFO_INT("backlog", backlog);
++			__END_FUNCTION_CALL_ANALYSIS
++		}
++	}
++
++	return original_listen(socket, backlog);
++}
++
++PUBLIC_FUNCTION int poll(struct pollfd *fds, nfds_t nfds, int timeout)
++{
++	if (test_if_pollfd_table_contain_network_sockets(fds, nfds))
++	{
++		register_last_read_pollfd_table(fds, nfds);
++
++		if (__START_FUNCTION_CALL_ANALYSIS_OK)
++		{
++			register_pollfd_table_parameters(fds, nfds);
++			__END_FUNCTION_CALL_ANALYSIS
++		}
++	}
++
++	return original_poll(fds, nfds, timeout);
++}
++
++PUBLIC_FUNCTION int ppoll(struct pollfd *fds, nfds_t nfds,
++               const struct timespec *timeout, const sigset_t *sigmask)
++{
++	if (test_if_pollfd_table_contain_network_sockets(fds, nfds))
++	{
++		register_last_read_pollfd_table(fds, nfds);
++
++		if (__START_FUNCTION_CALL_ANALYSIS_OK)
++		{
++			register_pollfd_table_parameters(fds, nfds);
++			__END_FUNCTION_CALL_ANALYSIS
++		}
++	}
++
++	return original_ppoll(fds, nfds, timeout, sigmask);
++}
++
++PUBLIC_FUNCTION int pselect(int nfds, fd_set *readfds, fd_set *writefds, fd_set *errorfds,
++      const struct timespec *timeout, const sigset_t *sigmask)
++{
++	if (test_if_fd_sets_contain_network_sockets(nfds, readfds, writefds, errorfds))
++	{
++		register_last_read_fds(readfds, nfds);
++
++		if (__START_FUNCTION_CALL_ANALYSIS_OK)
++		{
++			register_fd_sets_parameters(nfds, readfds, writefds, errorfds);
++			__END_FUNCTION_CALL_ANALYSIS
++		}
++	}
++
++	return original_pselect(nfds, readfds, writefds, errorfds, timeout, sigmask);
++}
++
++PUBLIC_FUNCTION ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
++                        struct sockaddr *src_addr, socklen_t *addrlen)
++{
++	char ip[IP_MAX_SIZE];
++	int port;
++
++	if (test_if_fd_is_a_network_socket(sockfd) == 1)
++	{
++		if (__START_FUNCTION_CALL_ANALYSIS_OK)
++		{
++			get_ip_string_and_port(src_addr, ip, IP_MAX_SIZE, &port);
++			__REGISTER_INFO_INT("sockfd", sockfd);
++			__REGISTER_INFO_CHARS("src_addr.ip", ip);
++			__REGISTER_INFO_INT("src_addr.port", port);
++
++			//printf("recvfrom addr: %s port %d\n", ip, port);
++			__END_FUNCTION_CALL_ANALYSIS
++		}
++	}
++
++	return original_recvfrom(sockfd, buf, len, flags, src_addr, addrlen);
++}
++
++PUBLIC_FUNCTION ssize_t recvmsg(int socket, struct msghdr *message, int flags)
++{
++	unsigned int fakeDnsPort=0;
++	ssize_t tsize=0;
++	struct sockaddr * sPtr = message->msg_name;
++	struct msghdr *msg = message;
++
++	tsize = original_recvmsg(socket, message, flags);
++	//printf("@sock: %d msg %p ptr: %p iov: %p fam: %ld port: %ld\n", socket, message, message->msg_name, message->msg_iov, sPtr->sa_family, ((struct sockaddr_in*)message->msg_name)->sin_family);
++
++	if (getenv("IPV6_FAKE_DNS_PORT") != NULL)
++	{
++		sscanf(getenv("IPV6_FAKE_DNS_PORT"), "%d", &fakeDnsPort);
++	}
++
++	// if there is some name defined - try to determine port
++	if (fakeDnsPort>0 && msg!=NULL && msg->msg_name!=NULL && msg->msg_namelen>0){
++		struct sockaddr * sPtr = msg->msg_name;
++		int resPort = 0;
++		if (sPtr->sa_family==AF_INET){
++			resPort = ntohs(((struct sockaddr_in *)msg->msg_name)->sin_port);
++		} else if (sPtr->sa_family==AF_INET6){
++			resPort = ntohs(((struct sockaddr_in6 *)msg->msg_name)->sin6_port);
++		}
++
++		// only if DNS port
++		if (resPort==fakeDnsPort){
++			void * origPtr = msg->msg_name;
++			struct sockaddr_in tmpAddr;
++			struct msghdr tmpMsg;
++			int i = 0, c = lastSockAddrRec;
++			for (i=0; i<sizeSockAddrRec; i++){
++				c = SOCK_ADDR_ARR_POSD1(c);
++				if (sockAddrArr[c].socket==socket){
++					//printf("Has cached %d at: c %d i %d len %d\n", socket, c, i, sockAddrArr[c].storLen);
++					memcpy(message->msg_name, &(sockAddrArr[c].stor), (message->msg_namelen));
++					message->msg_name = &(sockAddrArr[c].stor);
++					message->msg_namelen = (sockAddrArr[c].storLen);
++					break;
++				}
++			}
++		}
++	}
++
++	return tsize;
++}
++
++PUBLIC_FUNCTION int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *errorfds,
++      struct timeval *timeout)
++{
++	if (test_if_fd_sets_contain_network_sockets(nfds, readfds, writefds, errorfds))
++	{
++		register_last_read_fds(readfds, nfds);
++
++		if (__START_FUNCTION_CALL_ANALYSIS_OK)
++		{
++			register_fd_sets_parameters(nfds, readfds, writefds, errorfds);
++			__END_FUNCTION_CALL_ANALYSIS
++		}
++	}
++
++	return original_select(nfds, readfds, writefds, errorfds, timeout);
++}
++
++PUBLIC_FUNCTION ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
++                      const struct sockaddr *dest_addr, socklen_t addrlen)
++{
++	char ip[IP_MAX_SIZE];
++	int port;
++
++	if (test_if_fd_is_a_network_socket(sockfd) == 1)
++	{
++		if (__START_FUNCTION_CALL_ANALYSIS_OK)
++		{
++			get_ip_string_and_port((struct sockaddr *)dest_addr, ip, IP_MAX_SIZE, &port);
++			__REGISTER_INFO_INT("sockfd", sockfd);
++			__REGISTER_INFO_CHARS("dest_addr.ip", ip);
++			__REGISTER_INFO_INT("dest_addr.port", port);
++
++			//printf("Sendto; ip: %s port %d\n", ip, port);
++			__END_FUNCTION_CALL_ANALYSIS
++		}
++	}
++
++	return original_sendto(sockfd, buf, len, flags, dest_addr, addrlen);
++}
++
++PUBLIC_FUNCTION ssize_t sendmsg(int socket, const struct msghdr *msg, int flags)
++{
++	unsigned int fakeDnsPort=0;
++	if (getenv("IPV6_FAKE_DNS_PORT") != NULL)
++	{
++		sscanf(getenv("IPV6_FAKE_DNS_PORT"), "%d", &fakeDnsPort);
++	}
++
++	// if there is some name defined - try to determine port
++	if (fakeDnsPort>0 && msg!=NULL && msg->msg_name!=NULL && msg->msg_namelen>0){
++		struct sockaddr * sPtr = msg->msg_name;
++		int resPort = 0;
++		if (sPtr->sa_family==AF_INET){
++			resPort = ntohs(((struct sockaddr_in *)msg->msg_name)->sin_port);
++		} else if (sPtr->sa_family==AF_INET6){
++			resPort = ntohs(((struct sockaddr_in6 *)msg->msg_name)->sin6_port);
++		}
++		// only if DNS port
++		if (resPort==53){
++			ssize_t tsize;
++			struct sockaddr tmpAddr;
++			struct msghdr tmpMsg;
++
++			sockAddrArr[SOCK_ADDR_ARR_EMPTYIDX].socket = socket;
++			sockAddrArr[SOCK_ADDR_ARR_EMPTYIDX].storLen = msg->msg_namelen;
++			memcpy(&(sockAddrArr[SOCK_ADDR_ARR_EMPTYIDX].stor), msg->msg_name, msg->msg_namelen);
++			SOCK_ADDR_ARR_ADDED;
++			//printf("Sending port: %d socket: %d len: %d\n", resPort, socket, msg->msg_namelen);
++
++			memcpy(&tmpMsg, msg, sizeof(struct msghdr));
++			tmpMsg.msg_name = &tmpAddr;
++			tmpMsg.msg_namelen = sizeof(struct sockaddr_in);
++
++			// fake address
++			struct sockaddr_in * sPtr = (struct sockaddr_in * ) (&tmpAddr);
++			sPtr->sin_family = AF_INET;
++			sPtr->sin_port = htons(fakeDnsPort);
++			inet_pton(AF_INET, "127.0.0.1", ((struct in_addr *) (&(sPtr->sin_addr))));
++
++			tsize =  original_sendmsg(socket, &tmpMsg, flags);
++			return tsize;
++		}
++	}
++
++	return original_sendmsg(socket, msg, flags);
++}
++
++PUBLIC_FUNCTION int setsockopt(int socket, int level, int option_name,
++		const void *option_value, socklen_t option_len)
++{
++	int value;
++
++	if ((level == IPPROTO_IPV6) && (option_name == IPV6_V6ONLY))
++	{
++		if (__START_FUNCTION_CALL_ANALYSIS_OK)
++		{
++			value = *(int*)option_value;
++			__REGISTER_INFO_INT("socket", socket);
++			__REGISTER_INFO_CHARS("option_name", "IPV6_V6ONLY");
++			__REGISTER_INFO_INT("value", value);
++			__END_FUNCTION_CALL_ANALYSIS
++		}
++	}
++
++	return original_setsockopt(socket, level, option_name, option_value, option_len);
++}
++
++PUBLIC_FUNCTION int socket(int domain, int type, int protocol)
++{
++	if ((domain == AF_INET)||(domain == AF_INET6))
++	{
++		if (__START_FUNCTION_CALL_ANALYSIS_OK)
++		{
++			__REGISTER_INFO_CHARS("domain", get_family_string(domain));
++			__REGISTER_INFO_CHARS("type", get_sock_type_string(type));
++			__REGISTER_INFO_CHARS("protocol", getprotobynumber(protocol)->p_name);
++			__END_FUNCTION_CALL_ANALYSIS
++		}
++	}
++	
++	return original_socket(domain, type, protocol);
++}
++/*
++PUBLIC_FUNCTION FILE *fopen(const char *path, const char *mode)
++{
++	char *fakeResolv=NULL;
++	if (getenv("IPV6_FAKE_DNS_RESOLV") != NULL)
++	{
++		fakeResolv = getenv("IPV6_FAKE_DNS_RESOLV");
++	}
++
++	if (fakeResolv!=NULL && strcmp("/etc/resolv.conf", path)==0)
++	{
++		return original_fopen(fakeResolv, mode);
++	}
++
++	return original_fopen(path, mode);
++}
++*/
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/src/vxonly/pollfd_table_tools.c ipv6-care/src/vxonly/pollfd_table_tools.c
+--- ipv6-care.orig/src/vxonly/pollfd_table_tools.c	1970-01-01 01:00:00.000000000 +0100
++++ ipv6-care/src/vxonly/pollfd_table_tools.c	2012-09-10 23:24:44.000000000 +0200
+@@ -0,0 +1,93 @@
++/*
++Copyright (c) Centre National de la Recherche Scientifique (CNRS,
++France). 2010. 
++Copyright (c) Members of the EGEE Collaboration. 2008-2010. See 
++http://www.eu-egee.org/partners/ for details on the copyright
++holders.  
++
++Licensed under the Apache License, Version 2.0 (the "License"); 
++you may not use this file except in compliance with the License. 
++You may obtain a copy of the License at 
++
++    http://www.apache.org/licenses/LICENSE-2.0 
++
++Unless required by applicable law or agreed to in writing, software 
++distributed under the License is distributed on an "AS IS" BASIS, 
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
++See the License for the specific language governing permissions and 
++limitations under the License.
++
++---------------------------------------------------------------------
++Developed by Etienne DUBLE - CNRS LIG (http://www.liglab.fr)
++etienne __dot__ duble __at__ imag __dot__ fr
++---------------------------------------------------------------------
++*/
++#include <sys/socket.h>
++#include <stdio.h>
++#include <sys/types.h>
++#include <poll.h>
++#include <string.h>
++
++#include "macros.h"
++#include "common_networking_tools.h"
++
++extern __thread fd_set last_read_fds_storage;
++extern __thread fd_set *last_read_fds;
++extern __thread unsigned int last_read_nfds;
++
++// These functions are useful for the management of [p]poll() arguments
++// ----------------------------------------------------------
++void register_last_read_pollfd_table(struct pollfd *fds, nfds_t nfds)
++{
++	unsigned int n;
++
++	if (last_read_fds == NULL)
++	{
++		last_read_fds = &last_read_fds_storage;
++	}
++	
++	FD_ZERO(last_read_fds);
++
++	for (n=0; n<nfds; n++)
++	{
++		if (fds[n].events & POLLIN > 0)
++		{
++			FD_SET(fds[n].fd, last_read_fds);
++		}
++	}
++
++	last_read_nfds = nfds;
++}
++
++int test_if_pollfd_table_contain_network_sockets(struct pollfd *fds, nfds_t nfds)
++{
++	unsigned int n;
++	int result = 0; // false by default
++
++	for (n=0; n<nfds; n++)
++	{
++		if (test_if_fd_is_a_network_socket(fds[n].fd) == 1)
++		{
++			result = 1; // true
++			break;
++		}
++	}
++
++	return result;
++}
++
++void register_pollfd_table_parameters(struct pollfd *fds, nfds_t nfds)
++{
++	char fd[32];
++	unsigned int n;
++
++	for (n=0; n<nfds; n++)
++	{
++		if (test_if_fd_is_a_network_socket(fds[n].fd) == 1)
++		{
++			snprintf(fd, sizeof(fd) -1, "%d", fds[n].fd);
++			__REGISTER_INFO_CHARS("fd", fd);
++		}
++	}
++}
++
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/src/vxonly/pollfd_table_tools.h ipv6-care/src/vxonly/pollfd_table_tools.h
+--- ipv6-care.orig/src/vxonly/pollfd_table_tools.h	1970-01-01 01:00:00.000000000 +0100
++++ ipv6-care/src/vxonly/pollfd_table_tools.h	2012-09-10 23:24:44.000000000 +0200
+@@ -0,0 +1,29 @@
++/*
++Copyright (c) Centre National de la Recherche Scientifique (CNRS,
++France). 2010. 
++Copyright (c) Members of the EGEE Collaboration. 2008-2010. See 
++http://www.eu-egee.org/partners/ for details on the copyright
++holders.  
++
++Licensed under the Apache License, Version 2.0 (the "License"); 
++you may not use this file except in compliance with the License. 
++You may obtain a copy of the License at 
++
++    http://www.apache.org/licenses/LICENSE-2.0 
++
++Unless required by applicable law or agreed to in writing, software 
++distributed under the License is distributed on an "AS IS" BASIS, 
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
++See the License for the specific language governing permissions and 
++limitations under the License.
++
++---------------------------------------------------------------------
++Developed by Etienne DUBLE - CNRS LIG (http://www.liglab.fr)
++etienne __dot__ duble __at__ imag __dot__ fr
++---------------------------------------------------------------------
++*/
++#ifndef __POLLFD_TABLE_TOOLS_H__
++#define __POLLFD_TABLE_TOOLS_H__
++int test_if_pollfd_table_contain_network_sockets(struct pollfd *fds, nfds_t nfds);
++void register_pollfd_table_parameters(struct pollfd *fds, nfds_t nfds);
++#endif
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/src/vxonly/problems.h ipv6-care/src/vxonly/problems.h
+--- ipv6-care.orig/src/vxonly/problems.h	1970-01-01 01:00:00.000000000 +0100
++++ ipv6-care/src/vxonly/problems.h	2012-09-10 23:24:44.000000000 +0200
+@@ -0,0 +1,130 @@
++/*
++Copyright (c) Centre National de la Recherche Scientifique (CNRS,
++France). 2010. 
++Copyright (c) Members of the EGEE Collaboration. 2008-2010. See 
++http://www.eu-egee.org/partners/ for details on the copyright
++holders.  
++
++Licensed under the Apache License, Version 2.0 (the "License"); 
++you may not use this file except in compliance with the License. 
++You may obtain a copy of the License at 
++
++    http://www.apache.org/licenses/LICENSE-2.0 
++
++Unless required by applicable law or agreed to in writing, software 
++distributed under the License is distributed on an "AS IS" BASIS, 
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
++See the License for the specific language governing permissions and 
++limitations under the License.
++
++---------------------------------------------------------------------
++Developed by Etienne DUBLE - CNRS LIG (http://www.liglab.fr)
++etienne __dot__ duble __at__ imag __dot__ fr
++---------------------------------------------------------------------
++*/
++#ifndef __PROBLEMS_H__
++#define __PROBLEMS_H__
++
++// general comments
++#define UNDERLINE					"----------------------------------------------"
++#define PROBLEM_DETECTED(problem)			"\n" "PROBLEM DETECTED:" "\n" UNDERLINE "\n" problem "\n" 
++#define SOLUTION(solution)				"\n" "SOLUTION:" "\n" UNDERLINE "\n" solution "\n" "\n"
++
++#define THIS_PROGRAM_USES_IPV4_ONLY(function)		"A call to " function "() which is IPv4-only was detected." 
++
++#define THIS_PROGRAM_USES_GETADDRINFO(specified_family)	\
++							"A call to getaddrinfo() with the address family set to " specified_family " was detected."
++
++#define THIS_PROGRAM_USES_AF_DEPENDENT(function)	"A call to " function "() was detected. Although this function is IPv6-capable, " \
++							"in most cases it makes your code address-family dependent, " \
++							"because you have to specify the address-family as a parameter." 
++
++#define USE_GETADDRINFO_AF_UNSPEC			"You should use getaddrinfo() with the address family set to AF_UNSPEC, " \
++							"in order to be address-family agnostic."
++
++#define USE_GETADDRINFO_AF_UNSPEC_AI_NUMERICHOST	"You should use getaddrinfo() with nodename=<your_ip_string>, no servname, " \
++							"the address family set to AF_UNSPEC " \
++							"and with the flag AI_NUMERICHOST, in order to be address-family agnostic."
++
++#define USE_GETNAMEINFO_NI_NUMERICHOST			"You should use getnameinfo() with the flag NI_NUMERICHOST, " \
++							"in order to be address-family agnostic."
++
++#define USE_GETNAMEINFO					"You should use getnameinfo() in order to be address-family agnostic."
++
++// accept on an IPv4 socket with no previous select / poll
++#define ACCEPT_ONLY_IPV4_PROBLEM			"accept_only_IPv4"
++#define ACCEPT_ONLY_IPV4_PROBLEM_DESCRIPTION		PROBLEM_DETECTED( "This program seems to accept only IPv4 clients." )	\
++							SOLUTION( "Modify the source code in order to accept both IPv4 and IPv6 clients.\n" \
++								"The first way to achieve this is to open two sockets, " \
++								"one IPv4 socket and one IPv6 socket with its option IPV6_V6ONLY set to 1; " \
++								"then you should wait for a connection event on any of them using 'select()'.\n" \
++								"The other way is to open just one IPv6 socket, and set its IPV6_V6ONLY option to 0." )
++// gethostbyname
++#define GETHOSTBYNAME_PROBLEM				"gethostbyname"
++#define GETHOSTBYNAME_PROBLEM_DESCRIPTION		PROBLEM_DETECTED( THIS_PROGRAM_USES_IPV4_ONLY("gethostbyname") )	\
++							SOLUTION( USE_GETADDRINFO_AF_UNSPEC )
++
++// gethostbyname_r
++#define GETHOSTBYNAME_R_PROBLEM				"gethostbyname_r"
++#define GETHOSTBYNAME_R_PROBLEM_DESCRIPTION		PROBLEM_DETECTED( THIS_PROGRAM_USES_IPV4_ONLY("gethostbyname_r") )	\
++							SOLUTION( USE_GETADDRINFO_AF_UNSPEC )
++#define PERL_GETHOSTBYNAME_R_PROBLEM			"gethostbyname_r"
++#define PERL_GETHOSTBYNAME_R_PROBLEM_DESCRIPTION	PROBLEM_DETECTED( THIS_PROGRAM_USES_IPV4_ONLY("gethostbyname_r") "\n" \
++								"Note: Perl uses gethostbyname_r() to process the gethostbyname() command; " "\n" \
++                                                        	"this warning may be the consequence of a gethostbyname() command in the script. " \
++								"gethostbyname() is IPv4-only also.") \
++							SOLUTION( USE_GETADDRINFO_AF_UNSPEC )
++
++// getaddrinfo with AF_INET
++#define GETADDRINFO_AF_INET_PROBLEM			"getaddrinfo_AF_INET"
++#define GETADDRINFO_AF_INET_PROBLEM_DESCRIPTION		PROBLEM_DETECTED( THIS_PROGRAM_USES_GETADDRINFO("AF_INET") ) 	 \
++							SOLUTION( USE_GETADDRINFO_AF_UNSPEC )
++#define PYTHON_GETADDRINFO_AF_INET_PROBLEM		"getaddrinfo_AF_INET"
++#define PYTHON_GETADDRINFO_AF_INET_PROBLEM_DESCRIPTION	PROBLEM_DETECTED( THIS_PROGRAM_USES_GETADDRINFO("AF_INET") "\n" \
++								"Note: Python uses getaddrinfo() to process the gethostbyname() command; " "\n" \
++								"if you do not see any getaddrinfo() in your code, this warning may be the consequence of " \
++								"a gethostbyname() command in the script. " \
++								"gethostbyname() is IPv4-only.") \
++							SOLUTION( USE_GETADDRINFO_AF_UNSPEC )
++
++// getaddrinfo with AF_INET6
++#define GETADDRINFO_AF_INET6_PROBLEM			"getaddrinfo_AF_INET6"
++#define GETADDRINFO_AF_INET6_PROBLEM_DESCRIPTION	PROBLEM_DETECTED( THIS_PROGRAM_USES_GETADDRINFO("AF_INET6") ) 	\
++							SOLUTION( USE_GETADDRINFO_AF_UNSPEC )
++
++// gethostbyaddr
++#define GETHOSTBYADDR_PROBLEM				"gethostbyaddr"
++#define GETHOSTBYADDR_PROBLEM_DESCRIPTION		PROBLEM_DETECTED( THIS_PROGRAM_USES_AF_DEPENDENT("gethostbyaddr") )      \
++							SOLUTION( USE_GETNAMEINFO )
++
++// gethostbyaddr_r
++#define GETHOSTBYADDR_R_PROBLEM				"gethostbyaddr_r"
++#define GETHOSTBYADDR_R_PROBLEM_DESCRIPTION		PROBLEM_DETECTED( THIS_PROGRAM_USES_AF_DEPENDENT("gethostbyaddr_r") )      \
++							SOLUTION( USE_GETNAMEINFO )
++
++// inet_addr
++#define INET_ADDR_PROBLEM				"inet_addr"
++#define INET_ADDR_PROBLEM_DESCRIPTION			PROBLEM_DETECTED( THIS_PROGRAM_USES_IPV4_ONLY("inet_addr") )      \
++							SOLUTION( USE_GETNAMEINFO_NI_NUMERICHOST )
++
++// inet_ntoa
++#define INET_NTOA_PROBLEM				"inet_ntoa"
++#define INET_NTOA_PROBLEM_DESCRIPTION			PROBLEM_DETECTED( THIS_PROGRAM_USES_IPV4_ONLY("inet_ntoa") )      \
++							SOLUTION( USE_GETNAMEINFO_NI_NUMERICHOST )
++
++// inet_aton
++#define INET_ATON_PROBLEM				"inet_aton"
++#define INET_ATON_PROBLEM_DESCRIPTION			PROBLEM_DETECTED( THIS_PROGRAM_USES_IPV4_ONLY("inet_aton") )      \
++							SOLUTION( USE_GETADDRINFO_AF_UNSPEC_AI_NUMERICHOST )
++
++// inet_ntop
++#define INET_NTOP_PROBLEM				"inet_ntop"
++#define INET_NTOP_PROBLEM_DESCRIPTION			PROBLEM_DETECTED( THIS_PROGRAM_USES_AF_DEPENDENT("inet_ntop") )      \
++							SOLUTION( USE_GETNAMEINFO_NI_NUMERICHOST )
++
++// inet_pton
++#define INET_PTON_PROBLEM				"inet_pton"
++#define INET_PTON_PROBLEM_DESCRIPTION			PROBLEM_DETECTED( THIS_PROGRAM_USES_AF_DEPENDENT("inet_pton") )      \
++							SOLUTION( USE_GETADDRINFO_AF_UNSPEC_AI_NUMERICHOST )
++
++#endif
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/src/vxonly/register_problem.c ipv6-care/src/vxonly/register_problem.c
+--- ipv6-care.orig/src/vxonly/register_problem.c	1970-01-01 01:00:00.000000000 +0100
++++ ipv6-care/src/vxonly/register_problem.c	2012-09-11 15:51:25.000000000 +0200
+@@ -0,0 +1,94 @@
++/*
++Copyright (c) Centre National de la Recherche Scientifique (CNRS,
++France). 2010. 
++Copyright (c) Members of the EGEE Collaboration. 2008-2010. See 
++http://www.eu-egee.org/partners/ for details on the copyright
++holders.  
++
++Licensed under the Apache License, Version 2.0 (the "License"); 
++you may not use this file except in compliance with the License. 
++You may obtain a copy of the License at 
++
++    http://www.apache.org/licenses/LICENSE-2.0 
++
++Unless required by applicable law or agreed to in writing, software 
++distributed under the License is distributed on an "AS IS" BASIS, 
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
++See the License for the specific language governing permissions and 
++limitations under the License.
++
++---------------------------------------------------------------------
++Developed by Etienne DUBLE - CNRS LIG (http://www.liglab.fr)
++etienne __dot__ duble __at__ imag __dot__ fr
++---------------------------------------------------------------------
++*/
++#include <stdlib.h>
++#include <stdio.h>
++#include <string.h>
++#include <errno.h>
++extern int errno;
++
++#include "filesystem.h"
++#include "append_to_string.h"
++#include "stack_tools.h"
++#include "log.h"
++#include "register_problem.h"
++#include "interpreted_language.h"
++#include "common_fd_tools.h"
++
++#define __IPV6_COMPLIANCE_ERRORS_DIR 	"possible_ipv6_related_errors"
++#define __IPV6_COMPLIANCE_WARNINGS_DIR 	"possible_ipv6_related_warnings"
++#define __PROBLEM_DESCRIPTION_FILENAME 	"problem_description"
++
++extern int interpreted_language;
++
++// this function writes an IPv6 compliance warning, with its description and
++// the current process stack, and writes the log
++void write_problem(int is_an_error, char *title, char *content)
++{
++	return; /*
++	FILE *file;
++	char *directory_path_alloc, *directory_path;
++	char *full_filename_alloc;
++
++	directory_path = get_or_create_the_directory_related_to_the_thread();
++	if (directory_path != NULL)
++	{	
++		asprintf(&directory_path_alloc, "%s/%s/%s", directory_path, 
++			(is_an_error == ERROR) ? __IPV6_COMPLIANCE_ERRORS_DIR : __IPV6_COMPLIANCE_WARNINGS_DIR, 
++			title);
++	
++		// try to create the directory
++		if (recursive_mkdir(directory_path_alloc) != 0)
++		{	// error already reported in recursive_mkdir()
++			free(directory_path_alloc);
++			return;
++		}
++		else
++		{
++			// write stack 
++			write_stack_file(directory_path_alloc);
++
++			// create problem description filename
++			asprintf(&full_filename_alloc, "%s/%s", directory_path_alloc, __PROBLEM_DESCRIPTION_FILENAME); 
++			free(directory_path_alloc);
++
++			// open the file
++			file = fopen(full_filename_alloc, "w");
++			free(full_filename_alloc);
++				
++			// write content
++			fprintf(file, "%s", content);
++			if (interpreted_language == 1)
++			{
++				fprintf(file, "%s", WARNING_INTERPRETED_LANGUAGE);
++			}
++			
++			// close
++			fclose(file);
++
++			log_if_needed();
++		}
++	}*/
++}
++
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/src/vxonly/register_problem.h ipv6-care/src/vxonly/register_problem.h
+--- ipv6-care.orig/src/vxonly/register_problem.h	1970-01-01 01:00:00.000000000 +0100
++++ ipv6-care/src/vxonly/register_problem.h	2012-09-10 23:24:44.000000000 +0200
+@@ -0,0 +1,33 @@
++/*
++Copyright (c) Centre National de la Recherche Scientifique (CNRS,
++France). 2010. 
++Copyright (c) Members of the EGEE Collaboration. 2008-2010. See 
++http://www.eu-egee.org/partners/ for details on the copyright
++holders.  
++
++Licensed under the Apache License, Version 2.0 (the "License"); 
++you may not use this file except in compliance with the License. 
++You may obtain a copy of the License at 
++
++    http://www.apache.org/licenses/LICENSE-2.0 
++
++Unless required by applicable law or agreed to in writing, software 
++distributed under the License is distributed on an "AS IS" BASIS, 
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
++See the License for the specific language governing permissions and 
++limitations under the License.
++
++---------------------------------------------------------------------
++Developed by Etienne DUBLE - CNRS LIG (http://www.liglab.fr)
++etienne __dot__ duble __at__ imag __dot__ fr
++---------------------------------------------------------------------
++*/
++#ifndef __REGISTER_PROBLEM_H__
++#define __REGISTER_PROBLEM_H__
++
++#define ERROR                   1
++#define WARNING                 0
++
++void write_problem(int is_an_error, char *title, char *content);
++#endif
++
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/src/vxonly/stack_tools.c ipv6-care/src/vxonly/stack_tools.c
+--- ipv6-care.orig/src/vxonly/stack_tools.c	1970-01-01 01:00:00.000000000 +0100
++++ ipv6-care/src/vxonly/stack_tools.c	2012-09-10 23:24:44.000000000 +0200
+@@ -0,0 +1,212 @@
++/*
++Copyright (c) Centre National de la Recherche Scientifique (CNRS,
++France). 2010. 
++Copyright (c) Members of the EGEE Collaboration. 2008-2010. See 
++http://www.eu-egee.org/partners/ for details on the copyright
++holders.  
++
++Licensed under the Apache License, Version 2.0 (the "License"); 
++you may not use this file except in compliance with the License. 
++You may obtain a copy of the License at 
++
++    http://www.apache.org/licenses/LICENSE-2.0 
++
++Unless required by applicable law or agreed to in writing, software 
++distributed under the License is distributed on an "AS IS" BASIS, 
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
++See the License for the specific language governing permissions and 
++limitations under the License.
++
++---------------------------------------------------------------------
++Developed by Etienne DUBLE - CNRS LIG (http://www.liglab.fr)
++etienne __dot__ duble __at__ imag __dot__ fr
++---------------------------------------------------------------------
++*/
++#include <stdlib.h>
++#include <stdio.h>
++#include <execinfo.h>
++#include <string.h>
++#include <libgen.h>
++
++#include "append_to_string.h"
++#include "interpreted_language.h"
++#include "system_commands.h"
++
++#define __MAX_STACK_TRACE		200
++#define __PROCESS_STACKS_FILENAME 	"process_stacks"
++
++extern int interpreted_language;
++extern char *interpreter_name; 
++
++// this function retrieves the details of the backtrace
++void get_bt_data(void **array, int array_size, char ***strings, size_t *size)
++{
++	// get the current back trace of the program
++	*size = backtrace (array, array_size);
++	*strings = backtrace_symbols (array, *size);
++}
++
++// this function analyses a line of the backtrace and returns pointers 
++// specifying where are written the object name and the address
++void get_bt_line_info(char *line, char **name_start, char **name_end, 
++			char **address_start, char **address_end)
++{
++	// check backtrace type
++	if (strstr(line, " at ") != NULL)
++	{	// freebsd
++		*name_start = strrchr(line, ' ') +1;
++		*name_end = line + strlen(line); // end of the line
++		*address_start = line;
++		*address_end = strchr(line, ' ');
++	}
++	else
++	{ 	// linux or solaris
++		*name_start = line;
++		*name_end = line + strcspn(line, " ('");
++		*address_start = strchr(line, '[') +1;
++		*address_end = strchr(line, ']');
++	}
++}
++
++// This function gets the name of the current executable
++// in the case of an interpreted language, it will be the interpreter 
++void save_interpreter_name()
++{
++	void *array[__MAX_STACK_TRACE];
++	size_t size;
++	char **strings, *name_start, *name_end, *address_start, *address_end;
++	int index_first_character_after_name;
++
++	// get the current backtrace of the program
++	get_bt_data(array, __MAX_STACK_TRACE, &strings, &size);
++
++	// last line will be the first program called
++	get_bt_line_info(strings[size -1], &name_start, &name_end, &address_start, &address_end);
++	*name_end = '\0';
++	asprintf(&interpreter_name, "%s", basename(name_start));
++
++	free (strings);
++}
++
++// This function writes the current process stack in a file in the given directory
++void write_stack_file(char *directory)
++{
++	void *array[__MAX_STACK_TRACE];
++	size_t size;
++	char **strings, *name_start, *name_end, *address_start, *address_end;
++	size_t i;
++	char *command = NULL, *last_file = NULL, *index_hexa, *index_end_hexa;
++	int index_first_character_after_name;
++
++	// get the current backtrace of the program
++	get_bt_data(array, __MAX_STACK_TRACE, &strings, &size);
++
++	// start creating a shell command
++	asprintf(&command, "LD_PRELOAD=\"\"; { ");
++
++	// loop for each function of the stack
++	for (i = 0; i < size; i++)
++	{
++		//printf("%d: %s\n", (int)i, strings[i]);
++
++		// we do not take into account the functions within this 
++		// ipv6 code checker library.
++		if (strstr(strings[i], "libipv6_care") != NULL)
++		{	// line ignored
++			continue;
++		}
++
++		// we end the words
++		get_bt_line_info(strings[i], &name_start, &name_end, &address_start, &address_end);
++		*name_end = '\0';
++		*address_end = '\0';
++
++		// with the object file we have the position in this object file
++		// as an hexadecimal number.
++		// we want to use the addr2line command to know the name of the function
++		// this point in the file corresponds to. 
++		// in case the tested program was compiled with -g, we will also get
++		// the source file name and line number.
++		// since using addr2line can be expensive for execution time, 
++		// we try to use it only one time for each different object file, by
++		// appending all hexadecimal numbers we want to the same addr2line command.
++		if ((last_file == NULL) || (strcmp(last_file, name_start) != 0))
++		{
++			if (last_file != NULL)
++			{
++				append_to_string(&command, "; ");
++			}
++
++			// in case the object file is not found in the given path we look for
++			// it by using the 'whereis' command.
++			append_to_string(&command, 	"location=\"%s\" ; echo obj \"$location\" ; "
++							"if [ ! -f \"$location\" ] ; "
++							"then "
++								"set -- $(whereis -b \"$location\") ; "
++								"location=\"$2\"; "
++							"fi ; "
++							"addr2line -f -C -e \"$location\"", name_start);
++			last_file = name_start;
++		}
++		
++		// append the hexadecimal number to this current addr2line command.
++		append_to_string(&command, " %s", address_start);
++	}
++
++	// the end of the shell command. It:
++	// - reformat the output
++	// - detect if source localisation was found or not (and in this case add a comment)
++	// - stops the stack after the function called 'main'.
++	append_to_string(&command, "; } 2>/dev/null | {	 "
++						"printf \"%%110s\n\" \"\" | tr ' ' '@'; "
++						"echo \"One call was done at $(date +%%Hh%%Mmn%%Ss). Process function calls stack was:\"; "
++						"echo ;"
++						"printf \"%%-70s | %%s\n\" \"Function:\" \"Source file name and line number:\"; "
++						"printf \"%%-70s | %%s\n\" \"Function:\" \"Source file name and line number:\" | tr '[:print:]' '-'; "
++						"all_code_found=1; "
++						"while read word1 word2; "
++						"do "
++							"if [ \"$word1\" = \"obj\" ] ; "
++							"then "
++								"current_obj=\"$word2\"; "
++							"else "
++								"func=\"$word1\"; read loc; "
++								"if [ \"$loc\" = \"??:0\" ] ; "
++								"then "
++									"if [ \"$func\" = \"??\" ] ; "
++									"then "
++										"printf \"%%-70s | %%s\n\" \"(in $current_obj)\" '*'; "
++									"else "
++										"printf \"%%-70s | %%s\n\" \"$func\" '*'; "
++									"fi; "
++									"all_code_found=0; "
++								"else "
++									"printf \"%%-70s | %%s\n\" \"$func\" \"$loc\"; "
++								"fi; "
++								"if [ \"$func\" = \"main\" ] ; "
++								"then "
++									"break; "
++								"fi; "
++							"fi; "
++						"done; "
++						"if [ \"$all_code_found\" = \"0\" ]; "
++						"then "
++							"echo ;"
++							"echo '*: code file and line number unavailable (source needs to be compiled with option -g)';"
++						"fi; "
++						"printf \"%%110s\n\" \"\" | tr ' ' '@'; "
++						"interpreted_language=%d; "
++						"if [ \"$interpreted_language\" = \"1\" ]; "
++						"then "
++							"printf \"" WARNING_INTERPRETED_LANGUAGE "\"; "
++						"fi; "
++						"echo; "
++					  "} >> %s/%s", interpreted_language, directory, __PROCESS_STACKS_FILENAME);
++
++	// execute the command
++	run_command(command, "create the file called 'process_stacks'");
++	free(command);
++
++	free (strings);
++}
++
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/src/vxonly/stack_tools.h ipv6-care/src/vxonly/stack_tools.h
+--- ipv6-care.orig/src/vxonly/stack_tools.h	1970-01-01 01:00:00.000000000 +0100
++++ ipv6-care/src/vxonly/stack_tools.h	2012-09-10 23:24:44.000000000 +0200
+@@ -0,0 +1,30 @@
++/*
++Copyright (c) Centre National de la Recherche Scientifique (CNRS,
++France). 2010. 
++Copyright (c) Members of the EGEE Collaboration. 2008-2010. See 
++http://www.eu-egee.org/partners/ for details on the copyright
++holders.  
++
++Licensed under the Apache License, Version 2.0 (the "License"); 
++you may not use this file except in compliance with the License. 
++You may obtain a copy of the License at 
++
++    http://www.apache.org/licenses/LICENSE-2.0 
++
++Unless required by applicable law or agreed to in writing, software 
++distributed under the License is distributed on an "AS IS" BASIS, 
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
++See the License for the specific language governing permissions and 
++limitations under the License.
++
++---------------------------------------------------------------------
++Developed by Etienne DUBLE - CNRS LIG (http://www.liglab.fr)
++etienne __dot__ duble __at__ imag __dot__ fr
++---------------------------------------------------------------------
++*/
++#ifndef __STACK_TOOLS_H__
++#define __STACK_TOOLS_H__
++void save_interpreter_name();
++void write_stack_file(char *directory);
++#endif
++
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/src/vxonly/system_commands.c ipv6-care/src/vxonly/system_commands.c
+--- ipv6-care.orig/src/vxonly/system_commands.c	1970-01-01 01:00:00.000000000 +0100
++++ ipv6-care/src/vxonly/system_commands.c	2012-09-10 23:24:44.000000000 +0200
+@@ -0,0 +1,127 @@
++/*
++Copyright (c) Centre National de la Recherche Scientifique (CNRS,
++France). 2010. 
++Copyright (c) Members of the EGEE Collaboration. 2008-2010. See 
++http://www.eu-egee.org/partners/ for details on the copyright
++holders.  
++
++Licensed under the Apache License, Version 2.0 (the "License"); 
++you may not use this file except in compliance with the License. 
++You may obtain a copy of the License at 
++
++    http://www.apache.org/licenses/LICENSE-2.0 
++
++Unless required by applicable law or agreed to in writing, software 
++distributed under the License is distributed on an "AS IS" BASIS, 
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
++See the License for the specific language governing permissions and 
++limitations under the License.
++
++---------------------------------------------------------------------
++Developed by Etienne DUBLE - CNRS LIG (http://www.liglab.fr)
++etienne __dot__ duble __at__ imag __dot__ fr
++---------------------------------------------------------------------
++*/
++#include <stdlib.h>
++#include <stdio.h>
++
++#include "append_to_string.h"
++#include "common_colors.h"
++#include "common_fd_tools.h"
++
++#define FAILURE_DIAGNOSIS_PART1 "** IPv6 CARE failed to"
++#define FAILURE_DIAGNOSIS_PART2 "because"
++#define FAILURE_DIAGNOSIS_PART3 ".\n** This usually means that a mechanism like AppArmor or SELinux is preventing this program to do this.\n"
++
++extern char *ld_preload_value;
++
++void unset_ld_preload()
++{
++	// save LD_PRELOAD if it was not done yet
++	if (ld_preload_value == NULL)
++	{
++		asprintf(&ld_preload_value, "%s", getenv("LD_PRELOAD"));
++	}
++
++	unsetenv("LD_PRELOAD");
++}
++
++void set_ld_preload()
++{
++	setenv("LD_PRELOAD", ld_preload_value, 1);
++}
++
++void write_failure_diagnosis(char *description, char *reason)
++{
++	colored_print_if_tty(RED, 
++			"** IPv6 CARE failed to %s because %s.\n"
++		  	"** This usually means that a mechanism like AppArmor or SELinux is preventing this program to do this.",
++		description, reason);
++	PRINTF("\n"); 
++	fflush(tty_fd);
++}
++
++int get_result_of_command(char **storage_string, char *command, char *description)
++{
++	FILE *fp;
++	char c[2];
++	int result;
++
++	// we temporarily unset LD_PRELOAD (we don't want the 
++	// subprocess created by popen to be monitored by ipv6-care)
++	unset_ld_preload();
++
++	c[1] = '\0';
++
++	// let's run the command
++	fp = popen(command, "r");
++	if (fp == NULL)
++	{
++		// provide diagnosis in case of problems
++		write_failure_diagnosis(description, "running the popen() function failed");
++		result = -1;
++	}
++	else
++	{
++		// let's read its output
++		while (!feof(fp))
++		{
++			fread(c, 1, 1, fp);
++			if ((c[0] != '\n') && (c[0] != '\r'))
++			{
++				append_to_string(storage_string, c);
++			}
++		}
++		result = 0;
++	}
++	pclose(fp);
++
++	// we restore LD_PRELOAD
++	set_ld_preload();
++
++	return result;
++}
++
++int run_command(char *command, char *description)
++{
++	int result;
++
++	// temporarily unset LD_PRELOAD (we don't want the 
++	// subprocess created by system() to be monitored by ipv6-care)
++	unset_ld_preload();
++
++	// let's run the command
++	result = system(command);
++
++	// provide diagnosis in case of problems
++	if (result != 0)
++	{
++		write_failure_diagnosis(description, "an attempt to create a subprocess executing a shell command failed");
++	}
++	
++	// restore LD_PRELOAD
++	set_ld_preload();
++
++	return result;
++}
++
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/src/vxonly/system_commands.h ipv6-care/src/vxonly/system_commands.h
+--- ipv6-care.orig/src/vxonly/system_commands.h	1970-01-01 01:00:00.000000000 +0100
++++ ipv6-care/src/vxonly/system_commands.h	2012-09-10 23:24:44.000000000 +0200
+@@ -0,0 +1,31 @@
++/*
++Copyright (c) Centre National de la Recherche Scientifique (CNRS,
++France). 2010. 
++Copyright (c) Members of the EGEE Collaboration. 2008-2010. See 
++http://www.eu-egee.org/partners/ for details on the copyright
++holders.  
++
++Licensed under the Apache License, Version 2.0 (the "License"); 
++you may not use this file except in compliance with the License. 
++You may obtain a copy of the License at 
++
++    http://www.apache.org/licenses/LICENSE-2.0 
++
++Unless required by applicable law or agreed to in writing, software 
++distributed under the License is distributed on an "AS IS" BASIS, 
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
++See the License for the specific language governing permissions and 
++limitations under the License.
++
++---------------------------------------------------------------------
++Developed by Etienne DUBLE - CNRS LIG (http://www.liglab.fr)
++etienne __dot__ duble __at__ imag __dot__ fr
++---------------------------------------------------------------------
++*/
++#ifndef __SYSTEM_COMMANDS_H__
++#define __SYSTEM_COMMANDS_H__
++
++int get_result_of_command(char **storage_string, char *command, char *description);
++int run_command(char *command, char *description);
++
++#endif
+diff -x 'm4*' -x '.git*' -uNr ipv6-care.orig/src/vxonly/variables.c ipv6-care/src/vxonly/variables.c
+--- ipv6-care.orig/src/vxonly/variables.c	1970-01-01 01:00:00.000000000 +0100
++++ ipv6-care/src/vxonly/variables.c	2012-09-10 23:24:44.000000000 +0200
+@@ -0,0 +1,46 @@
++/*
++Copyright (c) Centre National de la Recherche Scientifique (CNRS,
++France). 2010. 
++Copyright (c) Members of the EGEE Collaboration. 2008-2010. See 
++http://www.eu-egee.org/partners/ for details on the copyright
++holders.  
++
++Licensed under the Apache License, Version 2.0 (the "License"); 
++you may not use this file except in compliance with the License. 
++You may obtain a copy of the License at 
++
++    http://www.apache.org/licenses/LICENSE-2.0 
++
++Unless required by applicable law or agreed to in writing, software 
++distributed under the License is distributed on an "AS IS" BASIS, 
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
++See the License for the specific language governing permissions and 
++limitations under the License.
++
++---------------------------------------------------------------------
++Developed by Etienne DUBLE - CNRS LIG (http://www.liglab.fr)
++etienne __dot__ duble __at__ imag __dot__ fr
++---------------------------------------------------------------------
++*/
++#include <sys/select.h>
++#include <stdio.h>
++
++// global variables
++int max_function_depth_reported = 0;
++int interpreted_language = 0;
++int verbose_level = 0;
++char *program_command_line = NULL;
++char *program_basename = NULL;
++char *ld_preload_value = NULL;
++char *interpreter_name = NULL;
++
++// per-thread variables
++__thread char *log_file_content = NULL;
++__thread char *log_function_line = NULL;
++__thread int index_last_line = -1;
++__thread int log_file_allocated_size = 0;
++__thread fd_set last_read_fds_storage;
++__thread fd_set *last_read_fds = NULL;
++__thread unsigned int last_read_nfds = 0;
++
++

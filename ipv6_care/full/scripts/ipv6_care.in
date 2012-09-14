@@ -1,0 +1,444 @@
+#!/usr/bin/env bash
+#
+# Copyright (c) Centre National de la Recherche Scientifique (CNRS,
+# France). 2010. 
+# Copyright (c) Members of the EGEE Collaboration. 2008-2010. See 
+# http://www.eu-egee.org/partners/ for details on the copyright
+# holders.  
+# 
+# Licensed under the Apache License, Version 2.0 (the "License"); 
+# you may not use this file except in compliance with the License. 
+# You may obtain a copy of the License at 
+# 
+#     http://www.apache.org/licenses/LICENSE-2.0 
+# 
+# Unless required by applicable law or agreed to in writing, software 
+# distributed under the License is distributed on an "AS IS" BASIS, 
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
+# See the License for the specific language governing permissions and 
+# limitations under the License.
+# 
+# ---------------------------------------------------------------------
+# Developed by Etienne DUBLE - CNRS LIG (http://www.liglab.fr)
+# etienne __dot__ duble __at__ imag __dot__ fr
+# ---------------------------------------------------------------------
+
+# needed autotools variables
+prefix=@prefix@
+exec_prefix=@exec_prefix@
+libdir=@libdir@
+bindir=@bindir@
+# end needed autotools variables
+
+PATCH_MODE_ENABLED=1
+
+# update the COLUMNS variable
+COLUMNS=$(tput cols)
+if [ "$COLUMNS" = "" ]
+then
+	COLUMNS=70
+fi
+
+this_program=$(basename $0)
+
+# only colorize if output is a terminal
+if [ -t 1 ]
+then
+	GREEN="\033[32;1m"
+	RED="\033[31;1m"
+	ENDCOLOR="\033[0m"
+else
+	GREEN=""
+	RED=""
+	ENDCOLOR=""
+fi
+
+vxonly_library="$libdir/libipv6_care_vxonly.so"
+checking_library="$libdir/libipv6_care_checking.so"
+patching_library="$libdir/libipv6_care_patching.so"
+
+if [ ! -f "$checking_library" ]
+then
+	echo "$(basename "$checking_library") was not found! Aborting." >&2
+	exit
+fi
+
+if [ ! -f "$patching_library" ]
+then
+	echo "$(basename "$patching_library") was not found! Aborting." >&2
+	exit
+fi
+
+print_usage()
+{
+	echo >&2
+	echo "Usage: simple mode(s):" >&2
+	if [ "$PATCH_MODE_ENABLED" = "1" ] 
+	then
+		echo "       $this_program patch <program_command_line>              # -> patch mode" >&2
+	fi
+	echo "       $this_program check [-v] <program_command_line>         # -> check mode" >&2
+	echo "       $this_program vxonly [-v] <program_command_line>         # -> force application to be IPvX-only" >&2
+	if [ "$PATCH_MODE_ENABLED" = "1" ] 
+	then
+		echo "Usage: system set up mode:" >&2
+		echo "       sudo $this_program system patch                         # -> patch all programs" >&2
+	fi
+	echo "Others:"	>&2
+	echo "       $this_program sh[ell] [-v]                              # -> shell" >&2
+	echo "       $this_program binary lookup <path_to_binary>            # -> self-diagnosis" >&2
+	echo >&2
+	echo "Examples:" >&2
+	if [ "$PATCH_MODE_ENABLED" = "1" ] 
+	then
+		echo "$this_program patch nc -l -p 3333		# Adapt the behavior of 'nc -l -p 3333' in order to make it IPv6 compliant" >&2
+		echo "$this_program patch service mysql start	# Adapt the behavior of mysql server in order to make it IPv6 compliant" >&2
+		echo "sudo $this_program system patch	 	# Toggle patch-mode for all programs started on this system" >&2
+	fi
+	echo "$this_program check nc -l -p 3333		# Diagnose IPv6 compliance of 'nc -l -p 3333'" >&2
+	echo "$this_program check -v nc -l -p 3333	# Same, but also display function calls on standard output" >&2
+	echo "$this_program shell 			# start IPv6 CARE shell - log all network-related programs" >&2
+	echo "$this_program binary lookup /bin/nc 	# Verify that IPv6 CARE can work correctly with the binary 'nc'" >&2
+	echo >&2
+}
+
+ipv6_care_get_diagnosis_directories()
+{
+	ls -1td /tmp/ipv6_diagnosis/*/by_pid/pid_* 2>/dev/null
+}
+
+ipv6_care_show_directories()
+{
+	# only colorize if output is a terminal
+	if [ -t 1 ]
+	then
+		GREEN="\033[32;1m"
+	else
+		ENDCOLOR=""
+	fi
+
+	new_number_of_directories=$(ipv6_care_get_diagnosis_directories | wc -l)
+	number_of_new_directories=$(($new_number_of_directories - $ipv6_care_prev_number_of_directories))
+
+	# check if diagnosis directories were created
+	if [ $number_of_new_directories -gt 0 ]
+	then
+		for directory in $(ipv6_care_get_diagnosis_directories | head -n $number_of_new_directories)
+		do
+			# sometimes we are going too fast and try to read the command line before it is written
+			# this loop will avoid this
+			while true
+			do
+				full_command_line=$(cat $directory/full_command_line 2>/dev/null)
+				if [ "$full_command_line" != "" ]
+				then
+					break
+				fi
+				sleep 0.1
+			done
+			echo -en "$GREEN"
+			echo -n  "IPv6 diagnosis for '$full_command_line' was generated in: $directory"
+			echo -e  "$ENDCOLOR"
+		done
+	fi
+
+	export ipv6_care_prev_number_of_directories=$new_number_of_directories 	# for next call
+
+	return $number_of_new_directories
+}
+
+ipv6_care_prev_number_of_directories=$(ipv6_care_get_diagnosis_directories | wc -l)
+
+case "$1" in
+	"sh"|"shell")
+		shift
+
+		case "$1" in
+			"-v")
+				export IPV6_VERBOSE_LEVEL=1
+				shift
+				;;
+			"")
+				export IPV6_VERBOSE_LEVEL=0
+				;;
+			*)
+				echo "Usage: $this_program sh[ell] [-v]" >&2
+				echo "Use '-v' if you want the functions calls displayed on the standard output." >&2
+				exit
+		esac
+
+		echo -e "$GREEN"
+		echo "IPv6 compliance checking is now enabled for all programs started in this bash session."
+		echo "Diagnosis will be reported in '/tmp/ipv6_diagnosis'."
+		echo -e "$ENDCOLOR"
+
+		export LD_PRELOAD="$checking_library"
+
+		PROMPT_COMMAND="ipv6_care_show_directories" 
+		PS1="$GREEN[IPv6 CARE]$ENDCOLOR \w\$ "
+
+		export PROMPT_COMMAND PS1 ipv6_care_prev_number_of_directories 
+		export -f ipv6_care_show_directories ipv6_care_get_diagnosis_directories
+		bash --noprofile --norc
+
+		echo -e "$GREEN"
+		echo "End of IPv6 CARE shell."
+		echo -e "$ENDCOLOR"
+		;;
+
+	"check")
+		shift
+
+		if [ "$1" = "-v" ]
+		then
+			verbose_level=1
+			shift
+		else
+			verbose_level=0
+		fi
+
+		# format the command line
+		program_to_test="$(
+			source "$bindir/IPv6_CARE_protect_arguments.sh"
+		)"
+
+		# check that it seems ok
+		if [ "$program_to_test" = "" ]
+		then
+			echo "Usage: $this_program check <program_command_line_which_must_be_tested_about_IPv6>" >&2
+			exit
+		fi
+
+		# function which prints a separation line
+		print_separation_line()
+		{
+			printf "%${COLUMNS}s\n" "" | tr " " "-"
+		}
+
+		# this function will be called at the end
+		end_of_script()
+		{
+			echo -en "$GREEN"
+			print_separation_line
+
+			# get directories 
+			directories=$(ipv6_care_show_directories)
+			number_of_new_directories=$?
+
+			# check if the diagnosis directory was created
+			if [ $number_of_new_directories -gt 0 ]
+			then
+				if [ $number_of_new_directories -gt 1 ]
+				then
+					echo "Several processes were started by this command. "
+				fi
+				echo "$directories"
+			else
+				echo "No IPv6 diagnosis was generated because no network-related function calls were detected."
+				echo "If this result is unexpected, try 'ipv6_care binary lookup <path_to_binary>'."
+			fi
+
+			echo -en "$GREEN"
+			print_separation_line
+			echo -en "$ENDCOLOR"
+			exit
+		}
+
+		get_process_list()
+		{	# on some systems no "-T" option is available
+			# so we combine the -t option and the tty command for the same effect
+			ps -t "$(expr "$(tty)" : "\/dev\/\(.*\)")" -o pid= -o comm=
+		}
+
+		get_process_list > /tmp/.plist_$$_init
+
+		# whatever happens, call end_of_script() at the end
+		trap end_of_script EXIT
+
+		# run the test
+		IPV6_VERBOSE_LEVEL=$verbose_level LD_PRELOAD="$checking_library" \
+						eval "IPV6_CARE_TTY=$(tty) $IPV6_CARE_DEBUG_TOOL $program_to_test"
+		# done.
+
+		# check if some subprocesses are still running
+		while true
+		do
+			get_process_list > /tmp/.plist_$$_end
+
+			subprocesses_list=$(diff /tmp/.plist_$$_init /tmp/.plist_$$_end | grep -vw ps | grep "^>.*$" | 
+						awk '{ print $2 }')
+			subprocesses_list=$(echo $subprocesses_list) 	# convert linebreaks to spaces
+			if [ "$subprocesses_list" != "" ]
+			then
+				echo "Some subprocesses started by the command are still running: $subprocesses_list. Waiting... (Press Ctrl-C to stop waiting)"
+				sleep 1
+			else
+				break
+			fi
+		done
+
+		;;
+
+  "vxonly")
+    shift
+
+    if [ "$1" = "-v" ]
+    then
+      verbose_level=1
+      shift
+    else
+      verbose_level=0
+    fi
+
+    # format the command line
+    program_to_test="$(
+      source "$bindir/IPv6_CARE_protect_arguments.sh"
+    )"
+
+    # check that it seems ok
+    if [ "$program_to_test" = "" ]
+    then
+      echo "Usage: $this_program vxonly <program_command_line_which_must_be_tested_about_IPv6>" >&2
+      exit
+    fi
+
+    # function which prints a separation line
+    print_separation_line()
+    {
+      printf "%${COLUMNS}s\n" "" | tr " " "-"
+    }
+
+    # this function will be called at the end
+    end_of_script()
+    {
+      echo -en "$GREEN"
+      print_separation_line
+      echo "VXOnly mode finished"
+
+      echo -en "$GREEN"
+      print_separation_line
+      echo -en "$ENDCOLOR"
+      exit
+    }
+
+    get_process_list()
+    { # on some systems no "-T" option is available
+      # so we combine the -t option and the tty command for the same effect
+      ps -t "$(expr "$(tty)" : "\/dev\/\(.*\)")" -o pid= -o comm=
+    }
+
+    get_process_list > /tmp/.plist_$$_init
+
+    # whatever happens, call end_of_script() at the end
+    trap end_of_script EXIT
+
+    # run the test
+    IPV6_VERBOSE_LEVEL=$verbose_level LD_PRELOAD="$vxonly_library" \
+            eval "IPV6_CARE_TTY=$(tty) $IPV6_CARE_DEBUG_TOOL $program_to_test"
+    # done.
+
+    # check if some subprocesses are still running
+    while true
+    do
+      get_process_list > /tmp/.plist_$$_end
+
+      subprocesses_list=$(diff /tmp/.plist_$$_init /tmp/.plist_$$_end | grep -vw ps | grep "^>.*$" | 
+            awk '{ print $2 }')
+      subprocesses_list=$(echo $subprocesses_list)  # convert linebreaks to spaces
+      if [ "$subprocesses_list" != "" ]
+      then
+        echo "Some subprocesses started by the command are still running: $subprocesses_list. Waiting... (Press Ctrl-C to stop waiting)"
+        sleep 1
+      else
+        break
+      fi
+    done
+
+    ;;
+
+	"patch")
+		shift
+
+		if [ "$PATCH_MODE_ENABLED" = "1" ] 
+		then
+			# format the command line
+			program_to_patch="$(
+				source "$bindir/IPv6_CARE_protect_arguments.sh"
+			)"
+
+			# check that it seems ok
+			if [ "$program_to_patch" = "" ]
+			then
+				echo "Usage: $this_program patch <program_command_line_which_must_be_patched_regarding_IPv6>" >&2
+				exit
+			fi
+
+			LD_PRELOAD="$patching_library" eval "IPV6_CARE_TTY=$(tty) $IPV6_CARE_DEBUG_TOOL $program_to_patch"
+		else
+			print_usage
+			exit
+		fi
+		;;
+
+	"binary")
+		shift
+		if [ "$1" != "lookup" -o "$2" = "" ]
+		then
+			print_usage
+			exit
+		else
+			if [ ! -f "$2" ]
+			then
+				print_usage
+				exit
+			fi
+		fi
+		IPv6_CARE_binary_lookup.sh "$2" "$checking_library"
+		;;
+
+	"system")
+		shift
+		if [ "$PATCH_MODE_ENABLED" = "1" ] 
+		then
+			if [ "$1" != "patch" ]
+			then
+				print_usage
+				exit
+			fi
+			if [ "$(whoami)" != "root" ] 
+			then
+				echo "This must be run as root. Aborted."
+			else
+				patch_mode_was="off"	 # init
+				if [ -f "/etc/ld.so.preload" ]
+				then
+					if [ "$(grep "$patching_library" /etc/ld.so.preload | wc -l)" -gt 0 ]
+					then
+						escaped_patching_library=$(echo "$patching_library" | sed -e 's/\//\\\//g')
+						updated_content=$(cat /etc/ld.so.preload | sed -e "s/[:space:]*$escaped_patching_library//g")
+						echo "$updated_content" > /etc/ld.so.preload
+						echo -e "System patch-mode was [on]. It is now [${GREEN}off${ENDCOLOR}]."
+						patch_mode_was="on"
+					fi
+				fi
+				if [ "$patch_mode_was" = "off" ]
+				then
+					echo " $patching_library" >> /etc/ld.so.preload
+					echo -e "System patch-mode was [off]. It is now [${GREEN}on${ENDCOLOR}]."
+					echo -e "${RED}CAUTION${ENDCOLOR}: Patch-mode is activated for all programs you start from now on!"
+					echo -e "         If you restart the operating system, it will be also true for all programs run at startup!"
+					echo -e "         Type '${GREEN}sudo $this_program system patch${ENDCOLOR}' again if you want to disable it."
+				fi
+			fi
+		else
+			print_usage
+			exit
+		fi
+		;;
+
+	*)
+		print_usage
+	        exit
+		;;
+esac
+

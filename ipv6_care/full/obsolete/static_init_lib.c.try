@@ -1,0 +1,60 @@
+/*
+Copyright (c) Members of the EGEE Collaboration. 2008. 
+See http://www.eu-egee.org/partners/ for details on the copyright
+holders.  
+
+Licensed under the Apache License, Version 2.0 (the "License"); 
+you may not use this file except in compliance with the License. 
+You may obtain a copy of the License at 
+
+    http://www.apache.org/licenses/LICENSE-2.0 
+
+Unless required by applicable law or agreed to in writing, software 
+distributed under the License is distributed on an "AS IS" BASIS, 
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
+See the License for the specific language governing permissions and 
+limitations under the License.
+
+---------------------------------------------------------------------
+Developed by Etienne DUBLE - CNRS UREC (http://www.urec.fr)
+etienne __dot__ duble __at__ urec __dot__ cnrs __dot__ fr
+Nov 25, 2008.
+---------------------------------------------------------------------
+
+Last modifications: 
+Etienne DUBLE 	-1.0:	Creation
+Etienne DUBLE 	-2.0:	Test if interpreted language
+
+*/
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <libgen.h>
+
+inline int ipv6_care_lib_on_load(void);
+
+int initialisation = ipv6_care_lib_on_load();
+
+//void __attribute__ ((constructor)) ipv6_care_lib_on_load(void)
+inline int ipv6_care_lib_on_load(void)
+{
+	static int first_time = 1;
+	if (first_time == 1)
+	{
+		first_time = 0;
+		system("echo test >> /tmp/hopla");
+	}
+	return 0;
+}
+
+//void __attribute__ ((destructor)) ipv6_care_lib_on_unload(void)
+void ipv6_care_lib_on_unload(void)
+{
+	static int first_time = 1;
+	if (first_time == 1)
+	{
+		first_time = 0;
+	}
+}
+

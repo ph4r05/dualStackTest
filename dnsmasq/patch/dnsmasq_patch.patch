@@ -1,0 +1,111 @@
+diff -x 'm4*' -x '.git*' -uNr dnsmasq.orig/src/dnsmasq.h dnsmasq/src/dnsmasq.h
+--- dnsmasq.orig/src/dnsmasq.h	2012-09-11 22:00:34.000000000 +0200
++++ dnsmasq/src/dnsmasq.h	2012-09-13 22:24:01.000000000 +0200
+@@ -223,6 +223,9 @@
+ #define OPT_TFTP           40
+ #define OPT_LAST           41
+ 
++#define OPT_FILTERIPV4 0x1
++#define OPT_FILTERIPV6 0x2
++
+ /* extra flags for my_syslog, we use a couple of facilities since they are known 
+    not to occupy the same bits as priorities, no matter how syslog.h is set up. */
+ #define MS_TFTP LOG_USER
+@@ -828,6 +831,9 @@
+ 
+   /* utility string buffer, hold max sized IP address as string */
+   char *addrbuff;
++  
++  /* filtering IPvX replies for simulating IPvX clients */
++  int ipvxfilter;
+ 
+ } *daemon;
+ 
+diff -x 'm4*' -x '.git*' -uNr dnsmasq.orig/src/forward.c dnsmasq/src/forward.c
+--- dnsmasq.orig/src/forward.c	2012-09-11 22:00:34.000000000 +0200
++++ dnsmasq/src/forward.c	2012-09-13 22:48:37.000000000 +0200
+@@ -480,6 +480,7 @@
+ 	server->flags |= SERV_WARNED_RECURSIVE;
+     }  
+     
++  // daemon has bogus address set, reply has no NXdomain, and DNS server returned bogus -> convert to NXDOMAIN
+   if (daemon->bogus_addr && RCODE(header) != NXDOMAIN &&
+       check_for_bogus_wildcard(header, n, daemon->namebuff, daemon->bogus_addr, now))
+     {
+@@ -506,11 +507,30 @@
+ 	  my_syslog(LOG_WARNING, _("possible DNS-rebind attack detected: %s"), daemon->namebuff);
+ 	  munged = 1;
+ 	}
++
++      /**
++       * filter IPv4 or IPv6 responses according to settings
++       * daemon disable v4/v6 new flags, no error, extract request
++       */
++      if (daemon->ipvxfilter>0 &&
++    	RCODE(header)==NOERROR &&
++    	ntohs(header->ancount)>0) {
++    	  unsigned int rtype = extract_request(header, n, daemon->namebuff, NULL);
++    	  if ( ((daemon->ipvxfilter & OPT_FILTERIPV4)>0 && rtype == F_IPV4) ||
++    		   ((daemon->ipvxfilter & OPT_FILTERIPV6)>0 && rtype == F_IPV6)){
++    		  munged=1;
++    		  header->hb3 |= HB3_AA;
++
++    		  cache_start_insert();
++    		  cache_insert(daemon->namebuff, NULL, now, 1e8, rtype | F_FORWARD | F_NEG | F_CONFIG);
++    		  cache_end_insert();
++    	  }
++      }
+     }
+   
+   /* do this after extract_addresses. Ensure NODATA reply and remove
+      nameserver info. */
+-  
++
+   if (munged)
+     {
+       header->ancount = htons(0);
+diff -x 'm4*' -x '.git*' -uNr dnsmasq.orig/src/option.c dnsmasq/src/option.c
+--- dnsmasq.orig/src/option.c	2012-09-11 22:00:34.000000000 +0200
++++ dnsmasq/src/option.c	2012-09-13 22:25:49.000000000 +0200
+@@ -120,6 +120,8 @@
+ #define LOPT_TFTP_LC   309
+ #define LOPT_RR        310
+ #define LOPT_CLVERBIND 311
++#define LOPT_FILTERIPV4 441
++#define LOPT_FILTERIPV6 442
+ 
+ #ifdef HAVE_GETOPT_LONG
+ static const struct option opts[] =  
+@@ -245,6 +247,8 @@
+     { "dhcp-duid", 1, 0, LOPT_DUID },
+     { "host-record", 1, 0, LOPT_HOST_REC },
+     { "bind-dynamic", 0, 0, LOPT_CLVERBIND },
++    { "filter-ipv4", 0, 0, LOPT_FILTERIPV4 },
++    { "filter-ipv6", 0, 0, LOPT_FILTERIPV6 },
+     { NULL, 0, 0, 0 }
+   };
+ 
+@@ -377,6 +381,8 @@
+   { LOPT_HOST_REC, ARG_DUP, "<name>,<address>", gettext_noop("Specify host (A/AAAA and PTR) records"), NULL },
+   { LOPT_RR, ARG_DUP, "<name>,<RR-number>,[<data>]", gettext_noop("Specify arbitrary DNS resource record"), NULL },
+   { LOPT_CLVERBIND, OPT_CLEVERBIND, NULL, gettext_noop("Bind to interfaces in use - check for new interfaces"), NULL},
++  { LOPT_FILTERIPV4, ARG_ONE, NULL, gettext_noop("Filter all IPv4 addresses from response"), NULL },
++  { LOPT_FILTERIPV6, ARG_ONE, NULL, gettext_noop("Filter all IPv6 addresses from response"), NULL },
+   { 0, 0, NULL, NULL, NULL }
+ }; 
+ 
+@@ -1690,7 +1696,13 @@
+ 	arg = comma;
+       } while (arg);
+       break;
+-      
++
++    case LOPT_FILTERIPV4:
++    	daemon->ipvxfilter |= OPT_FILTERIPV4;
++    	break;
++    case LOPT_FILTERIPV6:
++    	daemon->ipvxfilter |= OPT_FILTERIPV6;
++    	break;
+     case 'S':            /*  --server */
+     case LOPT_LOCAL:     /*  --local */
+     case 'A':            /*  --address */

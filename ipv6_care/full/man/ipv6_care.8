@@ -1,0 +1,127 @@
+.\" Copyright (c) Centre National de la Recherche Scientifique (CNRS,
+.\" France). 2010. 
+.\" Copyright (c) Members of the EGEE Collaboration. 2008-2010. See 
+.\" http://www.eu-egee.org/partners/ for details on the copyright
+.\" holders.  
+.\" 
+.\" Licensed under the Apache License, Version 2.0 (the "License"); 
+.\" you may not use this file except in compliance with the License. 
+.\" You may obtain a copy of the License at 
+.\" 
+.\"     http://www.apache.org/licenses/LICENSE-2.0 
+.\" 
+.\" Unless required by applicable law or agreed to in writing, software 
+.\" distributed under the License is distributed on an "AS IS" BASIS, 
+.\" WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
+.\" See the License for the specific language governing permissions and 
+.\" limitations under the License.
+
+.TH ipv6_care 8 "December 13, 2011" "GNU/Linux"
+
+.\" disable hyphenation
+.ad l
+
+.SH NAME
+ipv6_care \- IPv6 compliance toolbox
+.SH SYNOPSIS
+.B ipv6_care
+check [-v] <program_command_line>		# -> check mode
+.br
+.B ipv6_care
+sh[ell] [-v]						# -> shell
+.br
+.B ipv6_care
+patch <program_command_line>			# -> patch mode
+.br
+.B ipv6_care
+system patch						# -> toggle patch mode for all next programs started (DANGEROUS if you restart the operating system!)
+.br
+.B ipv6_care
+binary lookup <path_to_binary>		# -> self-diagnosis
+
+.SH DESCRIPTION
+.B IPv6 CARE 
+(\fBIPv6 C\fRompliance \fBA\fRutomatic \fBR\fRuntime \fBE\fRnvironment) is a toolbox easing IPv6 compliance diagnosis and migration of applications.
+.PP
+It is able to correct the behavior of applications in order to make them IPv6 compliant ('patch' mode). Alternatively the tool can generate a detailed diagnosis about the IPv6 compliance of an application ('check' mode).
+It works by monitoring processes and detecting or patching the function calls related to IPv4 and IPv6 sockets. 
+.PP
+.B IPv6 CARE
+is using an \fBLD_PRELOAD\fR-based mechanism (see \fBld.so\fR(8)) in order to trap these function calls.
+.PP
+One of the following commands must be specified as the first parameter:
+.PP
+- \fBcheck\fR:
+Run the specified program and diagnose its IPv6 compliance. 
+.PP
+- \fBshell\fR:
+Enter a bash shell where all processes started will be checked.
+.PP
+- \fBpatch\fR:
+Run the specified program and patch it in order to make it IPv6 compliant.
+.PP
+- \fBsystem patch\fR:
+Toggle the patch mode for all programs started from now on. (This setting WILL persist afer a system restart and, consequently, will modify the behavior of all services run at startup. Use this with extreme caution: don't try that on a production machine unless you fully trust this software! Or carefully test it on a test-machine with similar setup beforehand.) Re-run this command to disable.
+.PP
+- \fBbinary lookup\fR:
+Check if the tool will work with the specified binary, and, if not, describe why. This is useful if IPv6 CARE seems not to work with a given program.
+
+
+.SH OPTIONS
+.B
+.IP -v 
+(in check mode)
+This option will cause
+.B IPv6 CARE
+to display the function calls detected on standard output.
+
+.SH EXAMPLES
+.B ipv6_care check -v 
+telnet www.google.fr 80
+.br
+This will start the specified command '\fBtelnet www.google.fr 80\fR', report the detected function calls, and generate a diagnosis in a subdirectory of /tmp/ipv6_diagnosis, as specified at the end of the tool's output.
+
+.PP
+.B ipv6_care shell
+.br
+This will start a bash session where IPv6 compliance of all started processes will be analysed.
+
+.PP
+(as root@my_v6only_mysql_server)
+.br
+.B ipv6_care patch
+service mysql start
+.br
+(as user@client)
+.br
+.B ipv6_care patch
+mysql -h my_v6only_mysql_server -p
+.br
+This will start the mysql service and client and patch them in order to make them IPv6 compliant.
+
+.PP
+(as root)
+.br
+.B ipv6_care system patch
+; init 6
+.br
+This applies the patch mode and restarts the machine, which means that the patch mode will be applied to ALL programs launched at start up. This is DANGEROUS!
+
+.PP
+.B ipv6_care binary lookup 
+/usr/bin/telnet
+.br
+This will tell you if the \fBLD_PRELOAD\fR-based mechanism which 
+.B IPv6 CARE
+uses is expected to work with the binary '\fB/usr/bin/telnet\fR'.
+
+
+.SH NOTES
+For more information please consult http://sourceforge.net/projects/ipv6-care or email to etienne.duble _at_ imag.fr.
+
+.SH BUGS
+Please report bugs to etienne.duble _at_ imag.fr.
+
+.SH "SEE ALSO"
+\fBipv6\fR(7), \fBld.so\fR(8)
+

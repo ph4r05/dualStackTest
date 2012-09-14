@@ -1,0 +1,37 @@
+
+Documentation is maintained at 
+http://sourceforge.net/project/showfiles.php?group_id=246941&package_id=301497
+Please refer to it.
+After installation you can also check the man page (man ipv6_care).
+You may also contact the developer at:
+etienne.duble _AT_ imag.fr
+
+This is just a very basic quick start.
+
+
+Installation steps from archive:
+--------------------------------
+* Download
+* tar xfz ipv6_care-*.tar.gz
+* cd ipv6_care-*
+* ./configure
+* make
+* sudo make install
+
+Installation steps from git (developer):
+----------------------------------------
+* git clone <repo>
+* cd ipv6-care
+* scripts/getsourceinfo.sh
+* autoreconf -i 
+* ./configure
+* make
+* sudo make install
+
+Main usages:
+------------
+ipv6-care check <your_program_and_arguments> # assess IPv6 compliance of your program
+<or>
+ipv6-care patch <your_program_and_arguments> # patch your program to make it compliant
+
+

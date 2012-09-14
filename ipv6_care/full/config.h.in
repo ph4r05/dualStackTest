@@ -1,0 +1,150 @@
+/* config.h.in.  Generated from configure.ac by autoheader.  */
+
+/* Record args of gethostbyaddr_r. */
+#undef GETHOSTBYADDR_R_ARGS
+
+/* Record args of gethostbyaddr_r with their types. */
+#undef GETHOSTBYADDR_R_ARGS_WITH_TYPES
+
+/* Record args of gethostbyname_r. */
+#undef GETHOSTBYNAME_R_ARGS
+
+/* Record args of gethostbyname_r with their types. */
+#undef GETHOSTBYNAME_R_ARGS_WITH_TYPES
+
+/* Define whether the 'struct hostent *' result is returned as the return
+   value of the function. */
+#undef GETHOSTBYXXXX_HOSTENT_RESULT_IS_RETURNED
+
+/* Record the return type of gethostby<something>_r() functions. */
+#undef GETHOSTBYXXXX_R_RETURN_TYPE
+
+/* Set the return value if dlsym fails when loading a gethostby<something>_r
+   function symbol. */
+#undef GETHOSTBYXXXX_R_RETURN_VALUE_IF_NOT_FOUND
+
+/* Record the prototype of getnameinfo(). */
+#undef GETNAMEINFO_PROTOTYPE
+
+/* Define to 1 if you have the <dlfcn.h> header file. */
+#undef HAVE_DLFCN_H
+
+/* Define to 1 if you have the `dlvsym' function. */
+#undef HAVE_DLVSYM
+
+/* Define whether EAI_ADDRFAMILY exists. */
+#undef HAVE_EAI_ADDRFAMILY
+
+/* Define whether EAI_AGAIN exists. */
+#undef HAVE_EAI_AGAIN
+
+/* Define whether EAI_FAIL exists. */
+#undef HAVE_EAI_FAIL
+
+/* Define whether EAI_MEMORY exists. */
+#undef HAVE_EAI_MEMORY
+
+/* Define whether EAI_NODATA exists. */
+#undef HAVE_EAI_NODATA
+
+/* Define whether EAI_NONAME exists. */
+#undef HAVE_EAI_NONAME
+
+/* Define whether EAI_SYSTEM exists. */
+#undef HAVE_EAI_SYSTEM
+
+/* Define whether ENODATA exists. */
+#undef HAVE_ENODATA
+
+/* Define to 1 if you have the <execinfo.h> header file. */
+#undef HAVE_EXECINFO_H
+
+/* Define whether the prototype of gethostby<something>_r() functions includes
+   a 'struct hostent **' parameter. */
+#undef HAVE_GETHBX_R_DOUBLE_POINTER_PARAM
+
+/* Define to 1 if you have the <inttypes.h> header file. */
+#undef HAVE_INTTYPES_H
+
+/* Define to 1 if you have the `c' library (-lc). */
+#undef HAVE_LIBC
+
+/* Define to 1 if you have the `dl' library (-ldl). */
+#undef HAVE_LIBDL
+
+/* Define to 1 if you have the `execinfo' library (-lexecinfo). */
+#undef HAVE_LIBEXECINFO
+
+/* Define to 1 if you have the `nsl' library (-lnsl). */
+#undef HAVE_LIBNSL
+
+/* Define to 1 if you have the `nsl_r' library (-lnsl_r). */
+#undef HAVE_LIBNSL_R
+
+/* Define to 1 if you have the <memory.h> header file. */
+#undef HAVE_MEMORY_H
+
+/* Define whether SO_BINDTODEVICE exists. */
+#undef HAVE_SO_BINDTODEVICE
+
+/* Define whether SO_PRIORITY exists. */
+#undef HAVE_SO_PRIORITY
+
+/* Define to 1 if you have the <stdint.h> header file. */
+#undef HAVE_STDINT_H
+
+/* Define to 1 if you have the <stdlib.h> header file. */
+#undef HAVE_STDLIB_H
+
+/* Define to 1 if you have the <strings.h> header file. */
+#undef HAVE_STRINGS_H
+
+/* Define to 1 if you have the <string.h> header file. */
+#undef HAVE_STRING_H
+
+/* Define if syscall SYS_gettid exists. */
+#undef HAVE_SYS_GETTID
+
+/* Define to 1 if you have the <sys/stat.h> header file. */
+#undef HAVE_SYS_STAT_H
+
+/* Define to 1 if you have the <sys/types.h> header file. */
+#undef HAVE_SYS_TYPES_H
+
+/* Define to 1 if you have the <unistd.h> header file. */
+#undef HAVE_UNISTD_H
+
+/* Define to 1 or 0, depending whether the compiler supports simple visibility
+   declarations. */
+#undef HAVE_VISIBILITY
+
+/* Define to the sub-directory in which libtool stores uninstalled libraries.
+   */
+#undef LT_OBJDIR
+
+/* Name of package */
+#undef PACKAGE
+
+/* Define to the address where bug reports for this package should be sent. */
+#undef PACKAGE_BUGREPORT
+
+/* Define to the full name of this package. */
+#undef PACKAGE_NAME
+
+/* Define to the full name and version of this package. */
+#undef PACKAGE_STRING
+
+/* Define to the one symbol short name of this package. */
+#undef PACKAGE_TARNAME
+
+/* Define to the home page for this package. */
+#undef PACKAGE_URL
+
+/* Define to the version of this package. */
+#undef PACKAGE_VERSION
+
+/* Define to 1 if you have the ANSI C header files. */
+#undef STDC_HEADERS
+
+/* Version number of package */
+#undef VERSION
